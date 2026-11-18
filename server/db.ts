@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import { DatabaseSync } from 'node:sqlite';
+import os from 'os';
 import path from 'path';
 import {
   resolveEffectivePlan,
@@ -13,16 +14,61 @@ import {
   type UserRecord,
 } from './types.js';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+function isReadOnlyRuntime(): boolean {
+  return Boolean(
+    process.env.VERCEL === '1' ||
+      process.env.VERCEL_ENV ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME
+  );
 }
 
-const DB_PATH = path.join(DATA_DIR, 'nova.db');
+function tryEnsureWritableDir(dirPath: string): boolean {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.accessSync(dirPath, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveDataDir(): { dir: string; isEphemeral: boolean } {
+  const customDir = process.env.NOVA_DATA_DIR?.trim();
+  if (customDir && tryEnsureWritableDir(customDir)) {
+    return { dir: path.resolve(customDir), isEphemeral: isReadOnlyRuntime() };
+  }
+
+  if (!isReadOnlyRuntime()) {
+    const localDir = path.resolve(process.cwd(), 'data');
+    if (tryEnsureWritableDir(localDir)) {
+      return { dir: localDir, isEphemeral: false };
+    }
+  }
+
+  const tmpDir = path.join(os.tmpdir(), 'nova-data');
+  tryEnsureWritableDir(tmpDir);
+  return { dir: tmpDir, isEphemeral: true };
+}
+
+const resolvedStorage = resolveDataDir();
+export const DATA_DIR = resolvedStorage.dir;
+export const IS_EPHEMERAL_STORAGE = resolvedStorage.isEphemeral;
+
+const customDbPath = process.env.SQLITE_DB_PATH?.trim();
+const DB_PATH = customDbPath ? path.resolve(customDbPath) : path.join(DATA_DIR, 'nova.db');
 const db = new DatabaseSync(DB_PATH);
 
+export function getDbStorageInfo(): { dbPath: string; isEphemeral: boolean } {
+  return { dbPath: DB_PATH, isEphemeral: IS_EPHEMERAL_STORAGE };
+}
+
+try {
+  db.exec('PRAGMA journal_mode = WAL;');
+} catch {
+  // Ignore WAL errors on restricted/ephemeral filesystems
+}
+
 db.exec(`
-  PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
 
   CREATE TABLE IF NOT EXISTS users (

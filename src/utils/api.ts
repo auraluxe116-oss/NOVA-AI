@@ -222,10 +222,14 @@ async function consumeSseStream(
     } catch {
       errObj = {};
     }
+    const fallbackMessage =
+      res.status === 404
+        ? `Route API introuvable (${url} — HTTP 404). Vérifiez le déploiement des fonctions serverless /api.`
+        : `Erreur serveur (${res.status})`;
     throw new ApiError(
-      String(errObj.error || `Erreur serveur (${res.status})`),
+      String(errObj.error || fallbackMessage),
       res.status,
-      String(errObj.code || 'STREAM_HTTP_ERROR')
+      String(errObj.code || (res.status === 404 ? 'API_NOT_FOUND' : 'STREAM_HTTP_ERROR'))
     );
   }
 
@@ -237,58 +241,67 @@ async function consumeSseStream(
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
 
+  const dispatchBlock = (rawEvent: string) => {
+    const trimmed = rawEvent.trim();
+    if (!trimmed) return;
+    for (const line of trimmed.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) continue;
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(jsonStr) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const type = String(event.type || '');
+      if (type === 'status') {
+        handlers.onStatus?.(
+          String(event.label || 'NOVA réfléchit...'),
+          (event.conversationId as string | null | undefined) ?? null
+        );
+      } else if (type === 'meta') {
+        handlers.onMeta?.(
+          String(event.model || ''),
+          (event.conversationId as string | null | undefined) ?? null
+        );
+      } else if (type === 'delta') {
+        const txt = typeof event.text === 'string' ? event.text : '';
+        if (txt) handlers.onDelta(txt);
+      } else if (type === 'sources') {
+        if (Array.isArray(event.sources)) {
+          handlers.onSources?.(event.sources as SourceLink[]);
+        }
+      } else if (type === 'done') {
+        handlers.onDone(event);
+      } else if (type === 'error') {
+        throw new ApiError(
+          String(event.error || 'Erreur lors de la génération IA.'),
+          500,
+          String(event.code || 'STREAM_ERROR')
+        );
+      }
+    }
+  };
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
     let sepIndex = buffer.indexOf('\n\n');
     while (sepIndex !== -1) {
-      const rawEvent = buffer.slice(0, sepIndex).trim();
+      const rawEvent = buffer.slice(0, sepIndex);
       buffer = buffer.slice(sepIndex + 2);
       sepIndex = buffer.indexOf('\n\n');
-
-      if (!rawEvent) continue;
-      for (const line of rawEvent.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr) continue;
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(jsonStr) as Record<string, unknown>;
-        } catch {
-          continue;
-        }
-
-        const type = String(event.type || '');
-        if (type === 'status') {
-          handlers.onStatus?.(
-            String(event.label || 'NOVA réfléchit...'),
-            (event.conversationId as string | null | undefined) ?? null
-          );
-        } else if (type === 'meta') {
-          handlers.onMeta?.(
-            String(event.model || ''),
-            (event.conversationId as string | null | undefined) ?? null
-          );
-        } else if (type === 'delta') {
-          const txt = typeof event.text === 'string' ? event.text : '';
-          if (txt) handlers.onDelta(txt);
-        } else if (type === 'sources') {
-          if (Array.isArray(event.sources)) {
-            handlers.onSources?.(event.sources as SourceLink[]);
-          }
-        } else if (type === 'done') {
-          handlers.onDone(event);
-        } else if (type === 'error') {
-          throw new ApiError(
-            String(event.error || 'Erreur lors de la génération IA.'),
-            500,
-            String(event.code || 'STREAM_ERROR')
-          );
-        }
-      }
+      dispatchBlock(rawEvent);
     }
+  }
+
+  const tail = (buffer + decoder.decode()).replace(/\r\n/g, '\n').trim();
+  if (tail) {
+    dispatchBlock(tail);
   }
 }
 

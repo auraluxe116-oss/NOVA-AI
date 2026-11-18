@@ -90,6 +90,14 @@ export function resolveAppBaseUrl(reqOrigin?: string): string {
   if (reqOrigin) {
     return reqOrigin.replace(/\/+$/, '');
   }
+  const vercelProdUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  if (vercelProdUrl) {
+    return `https://${vercelProdUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`;
+  }
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) {
+    return `https://${vercelUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`;
+  }
   return 'http://localhost:3000';
 }
 

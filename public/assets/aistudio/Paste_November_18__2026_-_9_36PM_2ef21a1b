@@ -1,0 +1,3398 @@
+
+Skip to content
+auraluxe116-oss
+NOVA-AI
+Repository navigation
+Code
+Issues
+Pull requests
+Actions
+Projects
+Wiki
+Security and quality
+Insights
+Settings
+Commit 96efa33
+auraluxe116-oss
+auraluxe116-oss
+committed
+3 hours ago
+·
+feat: initialize project structure and base UI
+Set up the core application stack including React 19, Tailwind CSS v4, and Vite. Configured project tooling, environment templates, and initial page routing structure for DIGIVORA AI.
+main
+1 parent 
+ed1cadc
+ commit 
+96efa33
+35 files changed
+
++8 904
+-11
+Lines changed: 8904 additions & 11 deletions
+File tree
+Filter files…
+.env.example
+.gitignore
+README.md
+bun.lock
+data
+index.html
+metadata.json
+package.json
+server.ts
+server
+auth.ts
+db.ts
+gemini.ts
+stripe.ts
+types.ts
+src
+App.tsx
+assets/images
+nova_hero_abstract_1795010116580.jpg
+components
+MarkdownRenderer.tsx
+TopNav.tsx
+index.css
+main.tsx
+pages
+AccueilPage.tsx
+AssistantPage.tsx
+AuthPages.tsx
+BusinessModePage.tsx
+CheckoutResultPages.tsx
+DashboardPage.tsx
+HistoryPage.tsx
+ProfilePage.tsx
+TarifsPage.tsx
+types
+node-sqlite.d.ts
+nova.ts
+utils
+api.ts
+tsconfig.json
+vite.config.ts
+app.post.
+0/0
+‎.env.example‎
++17
+Lines changed: 17 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,17 @@
+# GEMINI_API_KEY: Required for Gemini AI API calls.
+# AI Studio automatically injects this at runtime from user secrets.
+GEMINI_API_KEY="MY_GEMINI_API_KEY"
+# APP_URL: Public URL where NOVA AI is hosted.
+APP_URL="MY_APP_URL"
+# SESSION_SECRET: Cryptographic secret for signing HTTP-only session cookies.
+SESSION_SECRET="REPLACE_WITH_LONG_RANDOM_SECRET"
+# STRIPE INTEGRATION (Optional until payments are enabled in Settings > Secrets)
+STRIPE_SECRET_KEY="sk_test_or_live_key"
+STRIPE_WEBHOOK_SECRET="whsec_your_webhook_secret"
+STRIPE_PRICE_PRO_MONTHLY="price_pro_monthly"
+STRIPE_PRICE_PRO_ANNUAL="price_pro_annual"
+STRIPE_PRICE_BUSINESS_MONTHLY="price_business_monthly"
+STRIPE_PRICE_BUSINESS_ANNUAL="price_business_annual"
+‎.gitignore‎
++8
+Lines changed: 8 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,8 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+‎README.md‎
+-11
+Lines changed: 0 additions & 11 deletions
+This file was deleted.
+‎bun.lock‎
++835
+Lines changed: 835 additions & 0 deletions
+Some generated files are not rendered by default. Learn more about customizing how changed files appear on GitHub.
+‎data/nova.db-shm‎
+32 KB
+Binary file not shown.
+‎data/nova.db-wal‎
+575 KB
+Binary file not shown.
+‎index.html‎
++32
+Lines changed: 32 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,32 @@
+<!doctype html>
+<html lang="fr" class="scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NOVA AI — Plateforme d'Intelligence Artificielle Premium</title>
+    <meta
+      name="description"
+      content="NOVA AI est une plateforme d'intelligence artificielle conversationnelle rapide, fiable et spécialisée dans le business, l'entrepreneuriat, la technologie, la finance et l'analyse de documents."
+    />
+    <meta
+      property="og:title"
+      content="NOVA AI — Plateforme d'Intelligence Artificielle Premium"
+    />
+    <meta
+      property="og:description"
+      content="Assistant IA conversationnel temps réel en streaming, Mode Business structuré en 7 étapes, vérification web avec sources et gestion SaaS sécurisée."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="bg-[#08080B] text-[#FAFAFA] antialiased selection:bg-[#7C3AED]/35 selection:text-[#FAFAFA]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+‎metadata.json‎
++6
+Lines changed: 6 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,6 @@
+{
+  "name": "DIGIVORA AI",
+  "description": "Assistant IA de création de scripts, accroches et storyboards TikTok en français.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+‎package.json‎
++41
+Lines changed: 41 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,41 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=server.js",
+    "start": "node server.js",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^3.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "mp4-muxer": "^5.2.2",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "stripe": "^23.1.0",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "@types/express": "^4.17.21"
+  }
+}
+‎server.ts‎
++983
+Lines changed: 983 additions & 0 deletions
+Large diffs are not rendered by default.
+‎server/auth.ts‎
++213
+Lines changed: 213 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,213 @@
+import crypto from 'crypto';
+import type express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { findUserById, toPublicUser } from './db.js';
+import type { PublicUser, UserRecord } from './types.js';
+const SESSION_COOKIE_NAME = 'nova_session';
+const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 jours
+function getSessionSecret(): Buffer {
+  const envSecret = process.env.SESSION_SECRET?.trim();
+  if (envSecret && envSecret !== 'REPLACE_WITH_LONG_RANDOM_SECRET' && envSecret.length >= 16) {
+    return crypto.createHash('sha256').update(envSecret).digest();
+  }
+  const keyFile = path.resolve(process.cwd(), 'data', '.session_key');
+  if (fs.existsSync(keyFile)) {
+    const existing = fs.readFileSync(keyFile, 'utf8').trim();
+    if (existing.length >= 32) {
+      return Buffer.from(existing, 'hex');
+    }
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+  fs.writeFileSync(keyFile, generated, { mode: 0o600 });
+  return Buffer.from(generated, 'hex');
+}
+const SESSION_SECRET_KEY = getSessionSecret();
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+export function verifyPassword(password: string, storedHash: string): boolean {
+  const parts = storedHash.split(':');
+  if (parts.length !== 2) return false;
+  const [salt, expectedHex] = parts;
+  if (!salt || !expectedHex) return false;
+  const derived = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHex, 'hex');
+  if (derived.length !== expected.length) return false;
+  return crypto.timingSafeEqual(derived, expected);
+}
+interface SessionPayload {
+  uid: string;
+  exp: number;
+}
+export function createSessionToken(userId: string): string {
+  const payload: SessionPayload = {
+    uid: userId,
+    exp: Date.now() + SESSION_TTL_MS,
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', SESSION_SECRET_KEY)
+    .update(encodedPayload)
+    .digest('base64url');
+  return `${encodedPayload}.${signature}`;
+}
+export function verifySessionToken(token: string): SessionPayload | null {
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [encodedPayload, providedSig] = parts;
+  if (!encodedPayload || !providedSig) return null;
+  const expectedSig = crypto
+    .createHmac('sha256', SESSION_SECRET_KEY)
+    .update(encodedPayload)
+    .digest('base64url');
+  const bufA = Buffer.from(providedSig, 'utf8');
+  const bufB = Buffer.from(expectedSig, 'utf8');
+  if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(encodedPayload, 'base64url').toString('utf8')
+    ) as SessionPayload;
+    if (!parsed.uid || !parsed.exp || Date.now() > parsed.exp) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!cookieHeader) return result;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key) {
+      try {
+        result[key] = decodeURIComponent(val);
+      } catch {
+        result[key] = val;
+      }
+    }
+  }
+  return result;
+}
+export function setSessionCookie(req: express.Request, res: express.Response, userId: string): void {
+  const token = createSessionToken(userId);
+  const isHttps =
+    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+  ];
+  if (isHttps) {
+    parts.push('Secure');
+  }
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+export function clearSessionCookie(req: express.Request, res: express.Response): void {
+  const isHttps =
+    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (isHttps) {
+    parts.push('Secure');
+  }
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+export function getClientIp(req: express.Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+export function hashIp(ip: string): string {
+  return crypto
+    .createHmac('sha256', SESSION_SECRET_KEY)
+    .update(ip)
+    .digest('hex')
+    .slice(0, 24);
+}
+export function getAuthenticatedUserRecord(req: express.Request): UserRecord | null {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) return null;
+  const payload = verifySessionToken(token);
+  if (!payload) return null;
+  return findUserById(payload.uid);
+}
+export function getAuthenticatedPublicUser(req: express.Request): PublicUser | null {
+  const record = getAuthenticatedUserRecord(req);
+  return record ? toPublicUser(record) : null;
+}
+// Sliding window burst rate limiter against brute force and flood requests
+const rateBuckets = new Map<string, number[]>();
+export function checkRateLimit(
+  bucketKey: string,
+  maxRequests: number,
+  windowMs: number
+): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  const existing = rateBuckets.get(bucketKey) ?? [];
+  const active = existing.filter((t) => t > cutoff);
+  if (active.length >= maxRequests) {
+    const oldest = active[0] ?? now;
+    const retryAfterSec = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
+    rateBuckets.set(bucketKey, active);
+    return { allowed: false, retryAfterSec };
+  }
+  active.push(now);
+  rateBuckets.set(bucketKey, active);
+  // Periodic cleanup if map grows
+  if (rateBuckets.size > 5000) {
+    for (const [k, times] of rateBuckets.entries()) {
+      if (times.every((t) => t <= cutoff)) {
+        rateBuckets.delete(k);
+      }
+    }
+  }
+  return { allowed: true, retryAfterSec: 0 };
+}
+‎server/db.ts‎
++741
+Lines changed: 741 additions & 0 deletions
+Large diffs are not rendered by default.
+‎server/gemini.ts‎
++467
+Lines changed: 467 additions & 0 deletions
+Large diffs are not rendered by default.
+‎server/stripe.ts‎
++671
+Lines changed: 671 additions & 0 deletions
+Large diffs are not rendered by default.
+‎server/types.ts‎
++156
+Lines changed: 156 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,156 @@
+export type PlanTier = 'free' | 'pro' | 'business';
+export type BillingInterval = 'monthly' | 'annual';
+export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
+export interface SourceLink {
+  title: string;
+  url: string;
+}
+export interface PlanSpec {
+  id: PlanTier;
+  name: string;
+  tagline: string;
+  monthlyPriceEur: number;
+  annualMonthlyEquivalentEur: number;
+  annualTotalEur: number;
+  dailyChatLimit: number;
+  dailyBusinessLimit: number;
+  maxAttachmentBytes: number;
+  priorityRouting: boolean;
+  webSearchIncluded: boolean;
+  fullBusinessSuite: boolean;
+  companyCreationSuite: boolean;
+  exportEnabled: boolean;
+}
+export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
+  free: {
+    id: 'free',
+    name: 'GRATUIT',
+    tagline: 'Pour découvrir NOVA AI au quotidien',
+    monthlyPriceEur: 0,
+    annualMonthlyEquivalentEur: 0,
+    annualTotalEur: 0,
+    dailyChatLimit: 15,
+    dailyBusinessLimit: 3,
+    maxAttachmentBytes: 40 * 1024,
+    priorityRouting: false,
+    webSearchIncluded: true,
+    fullBusinessSuite: false,
+    companyCreationSuite: false,
+    exportEnabled: false,
+  },
+  pro: {
+    id: 'pro',
+    name: 'PRO',
+    tagline: 'Pour entrepreneurs, indépendants et créateurs',
+    monthlyPriceEur: 9.99,
+    annualMonthlyEquivalentEur: 7.99,
+    annualTotalEur: 95.88,
+    dailyChatLimit: 500,
+    dailyBusinessLimit: 100,
+    maxAttachmentBytes: 150 * 1024,
+    priorityRouting: true,
+    webSearchIncluded: true,
+    fullBusinessSuite: true,
+    companyCreationSuite: false,
+    exportEnabled: true,
+  },
+  business: {
+    id: 'business',
+    name: 'BUSINESS',
+    tagline: 'Pour fondateurs, dirigeants et équipes en croissance',
+    monthlyPriceEur: 19.99,
+    annualMonthlyEquivalentEur: 15.99,
+    annualTotalEur: 191.88,
+    dailyChatLimit: 2000,
+    dailyBusinessLimit: 300,
+    maxAttachmentBytes: 300 * 1024,
+    priorityRouting: true,
+    webSearchIncluded: true,
+    fullBusinessSuite: true,
+    companyCreationSuite: true,
+    exportEnabled: true,
+  },
+};
+export const GUEST_DAILY_CHAT_LIMIT = 5;
+export const GUEST_DAILY_BUSINESS_LIMIT = 1;
+export interface UserRecord {
+  id: string;
+  email: string;
+  password_hash: string;
+  display_name: string;
+  company_name: string;
+  plan: PlanTier;
+  billing_interval: BillingInterval;
+  subscription_status: SubscriptionStatus;
+  cancel_at_period_end: number;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  current_period_end: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface PublicUser {
+  id: string;
+  email: string;
+  displayName: string;
+  companyName: string;
+  plan: PlanTier;
+  effectivePlan: PlanTier;
+  billingInterval: BillingInterval;
+  subscriptionStatus: SubscriptionStatus;
+  cancelAtPeriodEnd: boolean;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  currentPeriodEnd: string | null;
+  createdAt: string;
+}
+export interface SubscriptionRow {
+  id: string;
+  user_id: string;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  stripe_checkout_session_id: string | null;
+  plan: PlanTier;
+  billing_interval: BillingInterval;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  cancel_at_period_end: number;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  canceled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export function resolveEffectivePlan(input: {
+  plan?: PlanTier | string;
+  subscription_status?: SubscriptionStatus | string;
+  subscriptionStatus?: SubscriptionStatus | string;
+  current_period_end?: string | null;
+  currentPeriodEnd?: string | null;
+}): PlanTier {
+  const plan = input.plan;
+  if (plan !== 'pro' && plan !== 'business') {
+    return 'free';
+  }
+  const status = input.subscriptionStatus ?? input.subscription_status ?? 'inactive';
+  if (status !== 'active') {
+    return 'free';
+  }
+  const periodEnd = input.currentPeriodEnd ?? input.current_period_end ?? null;
+  if (periodEnd) {
+    const endMs = Date.parse(periodEnd);
+    if (Number.isFinite(endMs) && Date.now() > endMs + 5 * 60_000) {
+      return 'free';
+    }
+  }
+  return plan;
+}
+‎src/App.tsx‎
++251
+Lines changed: 251 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,251 @@
+import { useEffect, useState } from 'react';
+import { TopNav } from './components/TopNav';
+import { AccueilPage } from './pages/AccueilPage';
+import { AssistantPage } from './pages/AssistantPage';
+import { AuthPages } from './pages/AuthPages';
+import { BusinessModePage } from './pages/BusinessModePage';
+import { PaymentFailurePage, PaymentSuccessPage } from './pages/CheckoutResultPages';
+import { DashboardPage } from './pages/DashboardPage';
+import { HistoryPage } from './pages/HistoryPage';
+import { ProfilePage } from './pages/ProfilePage';
+import { TarifsPage } from './pages/TarifsPage';
+import type { PageView, PublicUser, QuotaSnapshot } from './types/nova';
+import { fetchAuthMe } from './utils/api';
+const VALID_VIEWS: PageView[] = [
+  'accueil',
+  'assistant',
+  'business',
+  'tarifs',
+  'connexion',
+  'inscription',
+  'dashboard',
+  'historique',
+  'profil',
+  'paiement-succes',
+  'paiement-echec',
+];
+function getInitialViewFromUrl(): {
+  view: PageView;
+  checkoutStatus: string | null;
+  stripeSessionId: string | null;
+} {
+  if (typeof window === 'undefined') {
+    return { view: 'accueil', checkoutStatus: null, stripeSessionId: null };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const rawView = params.get('view') as PageView | null;
+  const checkoutStatus = params.get('checkout');
+  const stripeSessionId = params.get('session_id');
+  if (rawView && VALID_VIEWS.includes(rawView)) {
+    return { view: rawView, checkoutStatus, stripeSessionId };
+  }
+  return { view: 'accueil', checkoutStatus, stripeSessionId };
+}
+export function App() {
+  const initial = getInitialViewFromUrl();
+  const [activeView, setActiveView] = useState<PageView>(initial.view);
+  const [checkoutStatus] = useState<string | null>(initial.checkoutStatus);
+  const [stripeSessionId] = useState<string | null>(initial.stripeSessionId);
+  const [user, setUser] = useState<PublicUser | null>(null);
+  const [quota, setQuota] = useState<QuotaSnapshot | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [openConversationId, setOpenConversationId] = useState<string | null>(null);
+  useEffect(() => {
+    void fetchAuthMe()
+      .then((res) => {
+        setUser(res.user);
+        setQuota(res.quota);
+      })
+      .catch(() => {
+        setUser(null);
+      })
+      .finally(() => setAuthReady(true));
+  }, []);
+  const navigate = (view: PageView) => {
+    setActiveView(view);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (view === 'accueil') {
+        url.searchParams.delete('view');
+      } else {
+        url.searchParams.set('view', view);
+      }
+      url.searchParams.delete('checkout');
+      url.searchParams.delete('session_id');
+      window.history.replaceState({}, '', url.toString());
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+  const handleLaunchPrompt = (prompt: string) => {
+    setOpenConversationId(null);
+    setPendingPrompt(prompt);
+    navigate('assistant');
+  };
+  const handleOpenConversation = (id: string) => {
+    setOpenConversationId(id);
+    navigate('assistant');
+  };
+  return (
+    <div className="min-h-screen bg-[#08080B] text-[#FAFAFA] flex flex-col">
+      <TopNav activeView={activeView} user={user} onNavigate={navigate} />
+      {!authReady ? (
+        <div className="flex flex-1 items-center justify-center py-24 text-sm text-[#8D8DA4]">
+          Chargement de NOVA AI...
+        </div>
+      ) : (
+        <div className="flex-1">
+          {activeView === 'accueil' && (
+            <AccueilPage
+              user={user}
+              onNavigate={navigate}
+              onLaunchPrompt={handleLaunchPrompt}
+            />
+          )}
+          {activeView === 'assistant' && (
+            <AssistantPage
+              user={user}
+              quota={quota}
+              initialPrompt={pendingPrompt}
+              initialConversationId={openConversationId}
+              onClearInitialPrompt={() => setPendingPrompt(null)}
+              onQuotaUpdated={(q) => setQuota(q)}
+              onNavigate={navigate}
+            />
+          )}
+          {activeView === 'business' && (
+            <BusinessModePage
+              user={user}
+              quota={quota}
+              onQuotaUpdated={(q) => setQuota(q)}
+              onNavigate={navigate}
+            />
+          )}
+          {activeView === 'tarifs' && (
+            <TarifsPage user={user} onNavigate={navigate} />
+          )}
+          {activeView === 'paiement-succes' && (
+            <PaymentSuccessPage
+              user={user}
+              sessionId={stripeSessionId}
+              onNavigate={navigate}
+              onVerified={(u, q) => {
+                setUser(u);
+                setQuota(q);
+              }}
+            />
+          )}
+          {activeView === 'paiement-echec' && (
+            <PaymentFailurePage user={user} onNavigate={navigate} />
+          )}
+          {(activeView === 'connexion' || activeView === 'inscription') && (
+            <AuthPages
+              mode={activeView}
+              onNavigate={navigate}
+              onAuthSuccess={(u, q) => {
+                setUser(u);
+                setQuota(q);
+                navigate('dashboard');
+              }}
+            />
+          )}
+          {activeView === 'dashboard' && (
+            <DashboardPage
+              user={user}
+              checkoutStatus={checkoutStatus}
+              onNavigate={navigate}
+              onOpenConversation={handleOpenConversation}
+            />
+          )}
+          {activeView === 'historique' && (
+            <HistoryPage
+              user={user}
+              onNavigate={navigate}
+              onOpenConversation={handleOpenConversation}
+            />
+          )}
+          {activeView === 'profil' && (
+            <ProfilePage
+              user={user}
+              quota={quota}
+              onNavigate={navigate}
+              onUserUpdated={(u, q) => {
+                setUser(u);
+                setQuota(q);
+              }}
+              onLoggedOut={() => {
+                setUser(null);
+                setOpenConversationId(null);
+                navigate('accueil');
+                void fetchAuthMe().then((r) => setQuota(r.quota));
+              }}
+            />
+          )}
+        </div>
+      )}
+      {/* Quiet Footer on non-full-height chat views */}
+      {activeView !== 'assistant' && (
+        <footer className="border-t border-[#1C1C28] bg-[#08080B] py-8">
+          <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-4 px-4 text-xs text-[#8888A0] sm:flex-row sm:items-center sm:px-6">
+            <div className="flex items-center gap-3">
+              <span className="font-display text-sm font-bold text-[#FAFAFA]">NOVA AI</span>
+              <span>Plateforme IA conversationnelle &amp; Mode Business</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-5">
+              <button
+                type="button"
+                onClick={() => navigate('assistant')}
+                className="hover:text-white"
+              >
+                Assistant IA
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('business')}
+                className="hover:text-white"
+              >
+                Mode Business
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('tarifs')}
+                className="hover:text-white"
+              >
+                Tarifs
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate(user ? 'dashboard' : 'connexion')}
+                className="hover:text-white"
+              >
+                {user ? 'Tableau de bord' : 'Connexion'}
+              </button>
+            </div>
+          </div>
+        </footer>
+      )}
+    </div>
+  );
+}
+export default App;
+‎src/assets/images/nova_hero_abstract_1795010116580.jpg‎
+647 KB
+
+
+
+‎src/components/MarkdownRenderer.tsx‎
++151
+Lines changed: 151 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,151 @@
+import { Check, Copy, ExternalLink } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { SourceLink } from '../types/nova';
+interface MarkdownRendererProps {
+  content: string;
+  sources?: SourceLink[];
+}
+function CodeBlock({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  const raw = String(children).replace(/\n$/, '');
+  const lang = className?.replace('language-', '') || 'code';
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(raw);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+  return (
+    <div className="my-3 overflow-hidden rounded-lg border border-[#232332] bg-[#0B0B10]">
+      <div className="flex items-center justify-between border-b border-[#232332] bg-[#111117] px-3 py-1.5 text-xs text-[#9E9EB5]">
+        <span className="font-mono uppercase">{lang}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs text-[#D4D4E2] hover:bg-[#1E1E2A] hover:text-white"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? 'Copié' : 'Copier'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3.5 text-xs leading-relaxed font-mono text-[#E8E8F4]">
+        <code>{raw}</code>
+      </pre>
+    </div>
+  );
+}
+export function MarkdownRenderer({ content, sources }: MarkdownRendererProps) {
+  return (
+    <div className="space-y-3 text-[15px] leading-relaxed text-[#E9E9F2]">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => (
+            <h1 className="mt-4 mb-2 font-display text-xl font-semibold text-white">
+              {children}
+            </h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="mt-5 mb-2 border-b border-[#232332] pb-1.5 font-display text-lg font-semibold text-white">
+              {children}
+            </h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="mt-3.5 mb-1.5 font-display text-base font-semibold text-[#DDD6FE]">
+              {children}
+            </h3>
+          ),
+          p: ({ children }) => <p className="mb-2.5 last:mb-0">{children}</p>,
+          ul: ({ children }) => (
+            <ul className="my-2 ml-5 list-disc space-y-1.5 marker:text-[#8B5CF6]">{children}</ul>
+          ),
+          ol: ({ children }) => (
+            <ol className="my-2 ml-5 list-decimal space-y-1.5 marker:text-[#8B5CF6]">{children}</ol>
+          ),
+          li: ({ children }) => <li className="pl-0.5">{children}</li>,
+          strong: ({ children }) => (
+            <strong className="font-semibold text-white">{children}</strong>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="my-3 border-l-2 border-[#7C3AED] bg-[#111117] px-3.5 py-2 text-sm text-[#C9C9DA]">
+              {children}
+            </blockquote>
+          ),
+          table: ({ children }) => (
+            <div className="my-3 overflow-x-auto rounded-lg border border-[#232332]">
+              <table className="w-full border-collapse text-left text-xs sm:text-sm">
+                {children}
+              </table>
+            </div>
+          ),
+          thead: ({ children }) => (
+            <thead className="bg-[#14141C] text-[#FAFAFA]">{children}</thead>
+          ),
+          th: ({ children }) => (
+            <th className="border-b border-[#232332] px-3 py-2 font-semibold">{children}</th>
+          ),
+          td: ({ children }) => (
+            <td className="border-b border-[#1D1D29] px-3 py-2 text-[#D2D2E0]">{children}</td>
+          ),
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#A78BFA] underline decoration-[#7C3AED]/60 underline-offset-2 hover:text-[#C4B5FD]"
+            >
+              {children}
+            </a>
+          ),
+          code: ({ className, children }) => {
+            const isBlock = Boolean(className) || String(children).includes('\n');
+            if (isBlock) {
+              return <CodeBlock className={className}>{children}</CodeBlock>;
+            }
+            return (
+              <code className="rounded bg-[#191924] px-1.5 py-0.5 font-mono text-[13px] text-[#C4B5FD]">
+                {children}
+              </code>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+      {sources && sources.length > 0 && (
+        <div className="mt-4 border-t border-[#232332] pt-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#9E9EB5]">
+            Sources web vérifiées
+          </p>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {sources.map((src, idx) => (
+              <a
+                key={`${src.url}-${idx}`}
+                href={src.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between gap-2 rounded-lg border border-[#232332] bg-[#0E0E14] px-3 py-2 text-xs text-[#D6D6E4] hover:border-[#7C3AED]/60 hover:text-white transition-colors"
+              >
+                <span className="truncate">{src.title}</span>
+                <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[#8B5CF6]" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+‎src/components/TopNav.tsx‎
++182
+Lines changed: 182 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,182 @@
+import { Menu, X } from 'lucide-react';
+import { useState } from 'react';
+import type { PageView, PublicUser } from '../types/nova';
+interface TopNavProps {
+  activeView: PageView;
+  user: PublicUser | null;
+  onNavigate: (view: PageView) => void;
+}
+export function TopNav({ activeView, user, onNavigate }: TopNavProps) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const navItems: Array<{ id: PageView; label: string }> = [
+    { id: 'accueil', label: 'Accueil' },
+    { id: 'assistant', label: 'Assistant IA' },
+    { id: 'business', label: 'Mode Business' },
+    { id: 'tarifs', label: 'Tarifs' },
+  ];
+  if (user) {
+    navItems.push(
+      { id: 'dashboard', label: 'Tableau de bord' },
+      { id: 'historique', label: 'Historique' }
+    );
+  }
+  const handleGo = (view: PageView) => {
+    onNavigate(view);
+    setMobileOpen(false);
+  };
+  return (
+    <header className="sticky top-0 z-40 h-16 border-b border-[#232332] bg-[#08080B]/92 backdrop-blur-md">
+      <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+        {/* Left Zone: Clean Wordmark only (no subtitle or status chip clutter) */}
+        <button
+          type="button"
+          onClick={() => handleGo('accueil')}
+          className="flex items-center gap-2.5 text-left whitespace-nowrap shrink-0 focus-visible:rounded-md"
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#7C3AED] text-white">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              className="h-4 w-4"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 2L14.8 9.2L22 12L14.8 14.8L12 22L9.2 14.8L2 12L9.2 9.2L12 2Z"
+                fill="currentColor"
+              />
+            </svg>
+          </span>
+          <span className="font-display text-lg font-bold tracking-tight text-[#FAFAFA]">
+            NOVA AI
+          </span>
+        </button>
+        {/* Center Zone: Single-line Primary Navigation */}
+        <nav
+          aria-label="Navigation principale"
+          className="hidden lg:flex items-center gap-1"
+        >
+          {navItems.map((item) => {
+            const active = activeView === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleGo(item.id)}
+                className={`px-3.5 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'bg-[#171721] text-[#FAFAFA] border border-[#2C2C3E]'
+                    : 'text-[#A1A1B5] hover:text-[#FAFAFA] hover:bg-[#111117]'
+                }`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+        {/* Right Zone: Auth / Account Controls */}
+        <div className="hidden lg:flex items-center gap-2.5 whitespace-nowrap shrink-0">
+          {user ? (
+            <button
+              type="button"
+              onClick={() => handleGo('profil')}
+              className={`flex items-center gap-2 rounded-lg border px-3.5 py-1.5 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                activeView === 'profil'
+                  ? 'border-[#7C3AED] bg-[#171721] text-[#FAFAFA]'
+                  : 'border-[#232332] bg-[#111117] text-[#E4E4EE] hover:border-[#3A3A52]'
+              }`}
+            >
+              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#7C3AED]/25 text-xs font-semibold text-[#C4B5FD]">
+                {user.displayName.charAt(0).toUpperCase()}
+              </span>
+              <span className="max-w-[140px] truncate">{user.displayName}</span>
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => handleGo('connexion')}
+                className="px-3.5 py-2 rounded-lg text-sm font-medium text-[#D4D4E2] hover:text-[#FAFAFA] transition-colors whitespace-nowrap shrink-0"
+              >
+                Connexion
+              </button>
+              <button
+                type="button"
+                onClick={() => handleGo('inscription')}
+                className="px-4 py-2 rounded-lg bg-[#7C3AED] hover:bg-[#6D28D9] text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+              >
+                Créer un compte
+              </button>
+            </>
+          )}
+        </div>
+        {/* Mobile Hamburger */}
+        <button
+          type="button"
+          onClick={() => setMobileOpen((prev) => !prev)}
+          aria-label={mobileOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
+          className="lg:hidden rounded-lg border border-[#232332] bg-[#111117] p-2 text-[#E4E4EE] hover:text-white"
+        >
+          {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </button>
+      </div>
+      {/* Mobile Drawer */}
+      {mobileOpen && (
+        <div className="lg:hidden border-b border-[#232332] bg-[#0B0B10] px-4 py-4">
+          <div className="flex flex-col gap-1.5">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleGo(item.id)}
+                className={`w-full text-left px-3.5 py-2.5 rounded-lg text-sm font-medium ${
+                  activeView === item.id
+                    ? 'bg-[#171721] text-[#FAFAFA] border border-[#2C2C3E]'
+                    : 'text-[#B5B5C8] hover:bg-[#111117] hover:text-white'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+            <div className="my-2 border-t border-[#232332]" />
+            {user ? (
+              <button
+                type="button"
+                onClick={() => handleGo('profil')}
+                className="w-full text-left px-3.5 py-2.5 rounded-lg bg-[#171721] text-sm font-medium text-[#FAFAFA]"
+              >
+                Profil ({user.displayName})
+              </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleGo('connexion')}
+                  className="px-3.5 py-2.5 rounded-lg border border-[#232332] text-center text-sm font-medium text-[#E4E4EE]"
+                >
+                  Connexion
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleGo('inscription')}
+                  className="px-3.5 py-2.5 rounded-lg bg-[#7C3AED] text-center text-sm font-semibold text-white"
+                >
+                  Inscription
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </header>
+  );
+}
+‎src/index.css‎
++74
+Lines changed: 74 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,74 @@
+@import "tailwindcss";
+@theme {
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-obsidian: #08080B;
+  --color-surface: #111117;
+  --color-surface-elevated: #171721;
+  --color-violet-primary: #7C3AED;
+  --color-violet-accent: #8B5CF6;
+  --color-violet-soft: #C4B5FD;
+  --color-border-subtle: #232332;
+}
+@layer base {
+  html {
+    background-color: #08080B;
+    color: #FAFAFA;
+    font-family: var(--font-sans);
+    color-scheme: dark;
+  }
+  body {
+    background-color: #08080B;
+    color: #FAFAFA;
+    overflow-x: hidden;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+    letter-spacing: -0.02em;
+  }
+  p, li, td, th, label, input, textarea, select {
+    letter-spacing: 0.004em;
+  }
+  :focus-visible {
+    outline: 2px solid #8B5CF6;
+    outline-offset: 2px;
+  }
+}
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+/* Custom sleek dark scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #08080B;
+}
+::-webkit-scrollbar-thumb {
+  background: #232332;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #36364E;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+‎src/main.tsx‎
++5
+Lines changed: 5 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,5 @@
+import {createRoot} from 'react-dom/client';
+import App from './App.tsx';
+import './index.css';
+createRoot(document.getElementById('root')!).render(<App />);
+‎src/pages/AccueilPage.tsx‎
++286
+Lines changed: 286 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,286 @@
+import { ArrowRight, Briefcase, Check, FileText, Globe, MessageSquare, ShieldCheck, Zap } from 'lucide-react';
+import { useState, type FormEvent } from 'react';
+import type { PageView, PublicUser } from '../types/nova';
+interface AccueilPageProps {
+  user: PublicUser | null;
+  onNavigate: (view: PageView) => void;
+  onLaunchPrompt: (prompt: string) => void;
+}
+const EXAMPLE_PROMPTS = [
+  'Structure un plan de lancement pour une agence automatisation IA avec 500 € de budget.',
+  'Explique simplement la différence entre SASU et EURL en France pour un indépendant.',
+  'Rédige une page de vente claire pour un logiciel de gestion destiné aux artisans.',
+  'Optimise cette requête SQL PostgreSQL et explique les index à créer.',
+];
+export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPageProps) {
+  const [quickInput, setQuickInput] = useState('');
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const cleaned = quickInput.trim();
+    if (!cleaned) {
+      onNavigate('assistant');
+      return;
+    }
+    onLaunchPrompt(cleaned);
+  };
+  return (
+    <main className="bg-[#08080B]">
+      {/* Hero Section */}
+      <section className="border-b border-[#1D1D29]">
+        <div className="mx-auto grid max-w-7xl gap-10 px-4 py-14 sm:px-6 lg:grid-cols-12 lg:items-center lg:py-20">
+          <div className="lg:col-span-7 space-y-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+              Plateforme d&apos;intelligence artificielle francophone
+            </p>
+            <h1 className="font-display text-[clamp(2.25rem,4.4vw,3.75rem)] font-bold leading-[1.06] tracking-tight text-[#FAFAFA]">
+              Réfléchir plus vite, analyser sans détour et bâtir des projets solides.
+            </h1>
+            <p className="max-w-2xl text-base leading-relaxed text-[#B2B2C6] sm:text-lg">
+              NOVA AI réunit un assistant conversationnel temps réel en streaming, un Mode
+              Business structuré en 7 étapes, l&apos;analyse de documents et la vérification
+              web avec sources cliquables.
+            </p>
+            {/* Quick Launch Bar directly wired to live streaming Assistant */}
+            <form
+              onSubmit={handleSubmit}
+              className="flex flex-col gap-2.5 rounded-xl border border-[#232332] bg-[#111117] p-2 sm:flex-row sm:items-center"
+            >
+              <input
+                type="text"
+                value={quickInput}
+                onChange={(e) => setQuickInput(e.target.value)}
+                placeholder="Posez une question business, technique, financière ou stratégique..."
+                aria-label="Question rapide pour NOVA AI"
+                className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#FAFAFA] placeholder-[#7B7B93] focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] transition-colors whitespace-nowrap shrink-0"
+              >
+                Demander à NOVA
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </form>
+            {/* Quick Example Starters */}
+            <div className="flex flex-wrap gap-2">
+              {EXAMPLE_PROMPTS.slice(0, 3).map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => onLaunchPrompt(prompt)}
+                  className="rounded-lg border border-[#232332] bg-[#0D0D13] px-3 py-1.5 text-left text-xs text-[#C2C2D6] hover:border-[#7C3AED]/70 hover:text-white transition-colors"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => onNavigate('assistant')}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#FAFAFA] px-5 py-2.5 text-sm font-semibold text-[#08080B] hover:bg-[#E6E6EE] transition-colors whitespace-nowrap shrink-0"
+              >
+                <MessageSquare className="h-4 w-4" />
+                Ouvrir l&apos;Assistant IA
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('business')}
+                className="inline-flex items-center gap-2 rounded-lg border border-[#2B2B3D] bg-[#111117] px-5 py-2.5 text-sm font-medium text-[#FAFAFA] hover:border-[#7C3AED] transition-colors whitespace-nowrap shrink-0"
+              >
+                <Briefcase className="h-4 w-4 text-[#A78BFA]" />
+                Explorer le Mode Business
+              </button>
+              {!user && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('tarifs')}
+                  className="px-3 py-2 text-sm font-medium text-[#A1A1B5] hover:text-white transition-colors whitespace-nowrap shrink-0"
+                >
+                  Voir les tarifs
+                </button>
+              )}
+            </div>
+          </div>
+          {/* Right Architectural Focal Visual */}
+          <div className="lg:col-span-5">
+            <div className="overflow-hidden rounded-xl border border-[#232332] bg-[#0E0E14]">
+              <img
+                src="/src/assets/images/nova_hero_abstract_1795010116580.jpg"
+                alt="Environnement de travail architectural NOVA AI en noir et violet électrique"
+                className="aspect-[16/10] w-full object-cover"
+              />
+              <div className="border-t border-[#232332] p-5 space-y-3">
+                <div className="flex items-center justify-between text-xs text-[#9E9EB5]">
+                  <span>Architecture temps réel</span>
+                  <span className="font-mono text-[#C4B5FD]">Streaming SSE</span>
+                </div>
+                <p className="text-sm leading-relaxed text-[#D8D8E6]">
+                  Affichage progressif dès les premiers jetons avec bascule automatique de secours
+                  en cas de surcharge, pour des échanges fluides sans blocage.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      {/* Capabilities Asymmetric Grid */}
+      <section className="border-b border-[#1D1D29] py-16">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6">
+          <div className="mb-10 max-w-2xl space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+              Capacités principales
+            </p>
+            <h2 className="font-display text-2xl font-bold text-[#FAFAFA] sm:text-3xl">
+              Conçue pour les décisions concrètes, de la question technique au plan d&apos;entreprise.
+            </h2>
+          </div>
+          <div className="grid gap-5 lg:grid-cols-12">
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-6 lg:col-span-7">
+              <div className="mb-4 flex items-center justify-between">
+                <span className="font-mono text-xs text-[#A78BFA]">01</span>
+                <Zap className="h-4 w-4 text-[#8B5CF6]" />
+              </div>
+              <h3 className="font-display text-xl font-semibold text-white">
+                Assistant conversationnel polyvalent &amp; rapide
+              </h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-[#B5B5C9]">
+                Posez vos questions en business, finance, informatique, code, marketing,
+                rédaction, sciences ou apprentissage. NOVA comprend les demandes même
+                imparfaites et stream la réponse en continu, avec historique complet dans
+                votre espace personnel.
+              </p>
+              <div className="mt-5 grid gap-2 text-xs text-[#D2D2E2] sm:grid-cols-2">
+                <div className="flex items-center gap-2">
+                  <Check className="h-3.5 w-3.5 text-[#8B5CF6]" />
+                  Indicateur immédiat « NOVA réfléchit... »
+                </div>
+                <div className="flex items-center gap-2">
+                  <Check className="h-3.5 w-3.5 text-[#8B5CF6]" />
+                  Réponses progressives en temps réel
+                </div>
+                <div className="flex items-center gap-2">
+                  <Check className="h-3.5 w-3.5 text-[#8B5CF6]" />
+                  Copie en 1 clic et régénération
+                </div>
+                <div className="flex items-center gap-2">
+                  <Check className="h-3.5 w-3.5 text-[#8B5CF6]" />
+                  Nouveau chat &amp; reprise d&apos;historique
+                </div>
+              </div>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-6 lg:col-span-5">
+              <div className="mb-4 flex items-center justify-between">
+                <span className="font-mono text-xs text-[#A78BFA]">02</span>
+                <Briefcase className="h-4 w-4 text-[#8B5CF6]" />
+              </div>
+              <h3 className="font-display text-xl font-semibold text-white">
+                Mode Business structuré en 7 étapes
+              </h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-[#B5B5C9]">
+                Chaque projet est cadré avec la même rigueur : objectif, budget réel (même
+                à 0 €), outils nécessaires, étapes de réalisation, risques, possibilités de
+                revenus sans promesse irréaliste, et plan d&apos;action concret.
+              </p>
+              <button
+                type="button"
+                onClick={() => onNavigate('business')}
+                className="mt-5 inline-flex items-center gap-1.5 text-sm font-semibold text-[#C4B5FD] hover:text-white"
+              >
+                Ouvrir le Mode Business
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-6 lg:col-span-5">
+              <div className="mb-4 flex items-center justify-between">
+                <span className="font-mono text-xs text-[#A78BFA]">03</span>
+                <FileText className="h-4 w-4 text-[#8B5CF6]" />
+              </div>
+              <h3 className="font-display text-xl font-semibold text-white">
+                Analyse de documents texte
+              </h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-[#B5B5C9]">
+                Importez vos fichiers texte, notes, exports CSV, JSON ou Markdown directement
+                dans le chat pour obtenir une synthèse, extraire des points clés ou détecter
+                des anomalies.
+              </p>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-6 lg:col-span-7">
+              <div className="mb-4 flex items-center justify-between">
+                <span className="font-mono text-xs text-[#A78BFA]">04</span>
+                <Globe className="h-4 w-4 text-[#8B5CF6]" />
+              </div>
+              <h3 className="font-display text-xl font-semibold text-white">
+                Recherche Web et charte de fiabilité
+              </h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-[#B5B5C9]">
+                Activez la vérification web à la demande pour ancrer les réponses récentes sur
+                des sources cliquables. NOVA distingue les faits établis des hypothèses et
+                n&apos;invente jamais d&apos;information lorsqu&apos;une donnée manque.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+      {/* Reliability Charter & Conversion */}
+      <section className="py-16">
+        <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-12 lg:items-center">
+          <div className="lg:col-span-7 space-y-4">
+            <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+              <ShieldCheck className="h-4 w-4" />
+              Engagement de transparence
+            </div>
+            <h2 className="font-display text-2xl font-bold text-white sm:text-3xl">
+              Une IA utile dit aussi quand elle ne sait pas.
+            </h2>
+            <p className="text-sm leading-relaxed text-[#B5B5C9] sm:text-base">
+              Contrairement aux outils qui comblent les vides par des suppositions, NOVA AI
+              est configurée pour signaler l&apos;incertitude, corriger ses erreurs lorsqu&apos;on les
+              relève et exclure toute promesse financière artificielle dans ses plans business.
+            </p>
+          </div>
+          <div className="lg:col-span-5 rounded-xl border border-[#232332] bg-[#111117] p-6">
+            <h3 className="font-display text-lg font-semibold text-white">
+              Commencer dès maintenant
+            </h3>
+            <p className="mt-1.5 text-sm text-[#A5A5BB]">
+              Testez gratuitement l&apos;assistant ou créez un compte pour sauvegarder vos
+              conversations et projets business.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => onNavigate(user ? 'dashboard' : 'inscription')}
+                className="rounded-lg bg-[#7C3AED] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] transition-colors"
+              >
+                {user ? 'Accéder au tableau de bord' : 'Créer un compte gratuit'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('tarifs')}
+                className="rounded-lg border border-[#2B2B3D] bg-[#171721] px-4 py-2.5 text-sm font-medium text-[#E4E4F0] hover:border-[#7C3AED]"
+              >
+                Comparer les formules
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+‎src/pages/AssistantPage.tsx‎
++713
+Lines changed: 713 additions & 0 deletions
+Large diffs are not rendered by default.
+‎src/pages/AuthPages.tsx‎
++194
+Lines changed: 194 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,194 @@
+import { Eye, EyeOff, Lock, Mail, User } from 'lucide-react';
+import { useState, type FormEvent } from 'react';
+import type { PageView, PublicUser, QuotaSnapshot } from '../types/nova';
+import { ApiError, loginUser, registerUser } from '../utils/api';
+interface AuthPagesProps {
+  mode: 'connexion' | 'inscription';
+  onNavigate: (view: PageView) => void;
+  onAuthSuccess: (user: PublicUser, quota: QuotaSnapshot) => void;
+}
+export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
+  const isRegister = mode === 'inscription';
+  const [displayName, setDisplayName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPwd, setShowPwd] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      if (isRegister) {
+        const res = await registerUser({
+          email,
+          password,
+          displayName,
+          companyName,
+        });
+        onAuthSuccess(res.user, res.quota);
+      } else {
+        const res = await loginUser({ email, password });
+        onAuthSuccess(res.user, res.quota);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Une erreur est survenue lors de l’authentification.';
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <main className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md items-center px-4 py-12">
+      <div className="w-full rounded-xl border border-[#232332] bg-[#111117] p-6 sm:p-8">
+        <div className="mb-6 space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+            Espace sécurisé NOVA AI
+          </p>
+          <h1 className="font-display text-2xl font-bold text-[#FAFAFA]">
+            {isRegister ? 'Créer un compte' : 'Connexion'}
+          </h1>
+          <p className="text-xs text-[#9E9EB5]">
+            {isRegister
+              ? 'Démarrez gratuitement avec 15 messages par jour et votre historique sauvegardé.'
+              : 'Retrouvez vos conversations, vos projets business et votre abonnement.'}
+          </p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {isRegister && (
+            <>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-[#D2D2E2]">
+                  Nom complet
+                </label>
+                <div className="relative">
+                  <User className="pointer-events-none absolute top-3 left-3 h-4 w-4 text-[#7D7D96]" />
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="Camille Laurent"
+                    className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] py-2.5 pr-3.5 pl-9 text-sm text-white placeholder-[#6A6A82] focus:border-[#7C3AED] focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-[#D2D2E2]">
+                  Entreprise ou projet (optionnel)
+                </label>
+                <input
+                  type="text"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="Ex. Studio Horizon"
+                  className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] px-3.5 py-2.5 text-sm text-white placeholder-[#6A6A82] focus:border-[#7C3AED] focus:outline-none"
+                />
+              </div>
+            </>
+          )}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[#D2D2E2]">
+              Adresse e-mail
+            </label>
+            <div className="relative">
+              <Mail className="pointer-events-none absolute top-3 left-3 h-4 w-4 text-[#7D7D96]" />
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="vous@exemple.fr"
+                className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] py-2.5 pr-3.5 pl-9 text-sm text-white placeholder-[#6A6A82] focus:border-[#7C3AED] focus:outline-none"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[#D2D2E2]">
+              Mot de passe
+            </label>
+            <div className="relative">
+              <Lock className="pointer-events-none absolute top-3 left-3 h-4 w-4 text-[#7D7D96]" />
+              <input
+                type={showPwd ? 'text' : 'password'}
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={isRegister ? '8 caractères minimum' : 'Votre mot de passe'}
+                className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] py-2.5 pr-10 pl-9 text-sm text-white placeholder-[#6A6A82] focus:border-[#7C3AED] focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPwd((prev) => !prev)}
+                aria-label={showPwd ? 'Masquer' : 'Afficher'}
+                className="absolute top-2.5 right-3 text-[#7D7D96] hover:text-white"
+              >
+                {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          {error && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {error}
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full rounded-lg bg-[#7C3AED] py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50 transition-colors"
+          >
+            {submitting
+              ? 'Vérification...'
+              : isRegister
+              ? 'Créer mon compte'
+              : 'Se connecter'}
+          </button>
+        </form>
+        <div className="mt-6 border-t border-[#1F1F2D] pt-4 text-center text-xs text-[#9E9EB5]">
+          {isRegister ? (
+            <>
+              Déjà inscrit ?{' '}
+              <button
+                type="button"
+                onClick={() => onNavigate('connexion')}
+                className="font-semibold text-[#C4B5FD] hover:text-white"
+              >
+                Se connecter
+              </button>
+            </>
+          ) : (
+            <>
+              Pas encore de compte ?{' '}
+              <button
+                type="button"
+                onClick={() => onNavigate('inscription')}
+                className="font-semibold text-[#C4B5FD] hover:text-white"
+              >
+                Créer un compte gratuit
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
+‎src/pages/BusinessModePage.tsx‎
++648
+Lines changed: 648 additions & 0 deletions
+Large diffs are not rendered by default.
+‎src/pages/CheckoutResultPages.tsx‎
++250
+Lines changed: 250 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,250 @@
+import { AlertCircle, ArrowRight, Briefcase, CheckCircle2, Clock, MessageSquare, ShieldAlert, XCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { BillingInterval, PageView, PlanTier, PublicUser, QuotaSnapshot } from '../types/nova';
+import { ApiError, verifyStripeCheckoutSession } from '../utils/api';
+interface PaymentSuccessPageProps {
+  user: PublicUser | null;
+  sessionId: string | null;
+  onNavigate: (view: PageView) => void;
+  onVerified: (user: PublicUser, quota: QuotaSnapshot) => void;
+}
+export function PaymentSuccessPage({
+  user,
+  sessionId,
+  onNavigate,
+  onVerified,
+}: PaymentSuccessPageProps) {
+  const [status, setStatus] = useState<'verifying' | 'paid' | 'pending' | 'error'>('verifying');
+  const [verifiedPlan, setVerifiedPlan] = useState<PlanTier | null>(null);
+  const [verifiedInterval, setVerifiedInterval] = useState<BillingInterval>('monthly');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!user) {
+      setStatus('error');
+      setErrorMsg('Connectez-vous à votre compte pour finaliser la vérification Stripe.');
+      return;
+    }
+    if (!sessionId) {
+      setStatus('error');
+      setErrorMsg(
+        'Identifiant de session Stripe absent. Vérifiez le statut de votre abonnement dans votre Profil.'
+      );
+      return;
+    }
+    let cancelled = false;
+    setStatus('verifying');
+    void verifyStripeCheckoutSession(sessionId)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.verified) {
+          setVerifiedPlan(res.plan);
+          setVerifiedInterval(res.interval);
+          setStatus('paid');
+          onVerified(res.user, res.quota);
+        } else {
+          setStatus('pending');
+          setErrorMsg(
+            `Paiement non encore confirmé par Stripe (statut : ${res.paymentStatus}). Les fonctionnalités payantes resteront bloquées tant que le paiement n'est pas réglé.`
+          );
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setStatus('error');
+        setErrorMsg(
+          err instanceof ApiError || err instanceof Error
+            ? err.message
+            : 'Impossible de vérifier le paiement auprès de Stripe.'
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, sessionId]);
+  return (
+    <main className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-2xl items-center px-4 py-14 sm:px-6">
+      <div className="w-full rounded-xl border border-[#232332] bg-[#111117] p-6 sm:p-8 space-y-6">
+        {status === 'verifying' && (
+          <div className="space-y-4 text-center py-6">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-[#3B2B68] bg-[#17132A]">
+              <Clock className="h-6 w-6 animate-pulse text-[#A78BFA]" />
+            </div>
+            <h1 className="font-display text-2xl font-bold text-white">
+              Vérification du paiement Stripe en cours...
+            </h1>
+            <p className="text-sm text-[#A5A5BB]">
+              NOVA AI contrôle la confirmation réelle de votre transaction auprès de Stripe
+              avant d&apos;activer votre formule.
+            </p>
+          </div>
+        )}
+        {status === 'paid' && (
+          <>
+            <div className="flex items-start gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-500/15">
+                <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-400">
+                  Paiement confirmé par Stripe
+                </p>
+                <h1 className="font-display text-2xl font-bold text-white sm:text-3xl">
+                  Votre abonnement {(verifiedPlan ?? 'pro').toUpperCase()} est actif
+                </h1>
+                <p className="text-sm text-[#B2B2C6]">
+                  Facturation {verifiedInterval === 'annual' ? 'annuelle' : 'mensuelle'} enregistrée
+                  sur votre compte. Toutes les fonctionnalités correspondantes sont maintenant
+                  débloquées.
+                </p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#0B0B10] p-4 text-xs space-y-2 text-[#D4D4E4]">
+              <div className="flex items-center justify-between">
+                <span className="text-[#9E9EB5]">Formule activée</span>
+                <span className="font-display font-bold uppercase text-white">
+                  NOVA AI {(verifiedPlan ?? 'pro').toUpperCase()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[#9E9EB5]">Statut</span>
+                <span className="font-mono text-emerald-400">Actif &amp; vérifié</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[#9E9EB5]">Gestion &amp; résiliation</span>
+                <span>Disponible à tout moment depuis votre Profil</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => onNavigate('assistant')}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#7C3AED] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+              >
+                <MessageSquare className="h-4 w-4" />
+                Lancer l&apos;Assistant IA
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('business')}
+                className="inline-flex items-center gap-2 rounded-lg border border-[#2C2C40] bg-[#171722] px-4 py-2.5 text-sm font-medium text-white hover:border-[#7C3AED]"
+              >
+                <Briefcase className="h-4 w-4 text-[#A78BFA]" />
+                Ouvrir Mode Business
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('dashboard')}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#B8B8CE] hover:text-white"
+              >
+                Tableau de bord
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          </>
+        )}
+        {(status === 'pending' || status === 'error') && (
+          <>
+            <div className="flex items-start gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-amber-500/40 bg-amber-500/15">
+                <ShieldAlert className="h-6 w-6 text-amber-400" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-400">
+                  Confirmation en attente ou impossible
+                </p>
+                <h1 className="font-display text-2xl font-bold text-white">
+                  Abonnement non activé automatiquement
+                </h1>
+                <p className="text-sm text-[#B2B2C6]">{errorMsg}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => onNavigate(user ? 'profil' : 'connexion')}
+                className="rounded-lg bg-[#7C3AED] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+              >
+                {user ? 'Vérifier mon Profil' : 'Se connecter'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('tarifs')}
+                className="rounded-lg border border-[#2C2C40] bg-[#171722] px-4 py-2.5 text-sm font-medium text-white hover:border-[#7C3AED]"
+              >
+                Retour aux Tarifs
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </main>
+  );
+}
+interface PaymentFailurePageProps {
+  user: PublicUser | null;
+  onNavigate: (view: PageView) => void;
+}
+export function PaymentFailurePage({ user, onNavigate }: PaymentFailurePageProps) {
+  return (
+    <main className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-2xl items-center px-4 py-14 sm:px-6">
+      <div className="w-full rounded-xl border border-[#232332] bg-[#111117] p-6 sm:p-8 space-y-6">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-red-500/40 bg-red-500/15">
+            <XCircle className="h-6 w-6 text-red-400" />
+          </div>
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-red-400">
+              Paiement annulé ou non finalisé
+            </p>
+            <h1 className="font-display text-2xl font-bold text-white sm:text-3xl">
+              Le paiement n&apos;a pas été effectué
+            </h1>
+            <p className="text-sm text-[#B2B2C6]">
+              La session de paiement Stripe a été interrompue ou refusée. Aucun montant n&apos;a
+              été débité et votre formule actuelle reste inchangée.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-start gap-2.5 rounded-xl border border-[#232332] bg-[#0B0B10] p-4 text-xs text-[#C6C6D8]">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+          <span>
+            Si votre banque a refusé l&apos;opération ou si vous avez annulé par erreur, vous
+            pouvez relancer votre souscription à tout moment depuis la page Tarifs.
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigate('tarifs')}
+            className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+          >
+            Réessayer sur Tarifs
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate(user ? 'dashboard' : 'accueil')}
+            className="rounded-lg border border-[#2C2C40] bg-[#171722] px-5 py-2.5 text-sm font-medium text-white hover:border-[#7C3AED]"
+          >
+            {user ? 'Tableau de bord' : "Retour à l'accueil"}
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
+‎src/pages/DashboardPage.tsx‎
++318
+Lines changed: 318 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,318 @@
+import { ArrowRight, Briefcase, CreditCard, History, MessageSquare } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { DashboardData, PageView, PublicUser } from '../types/nova';
+import { fetchDashboard } from '../utils/api';
+interface DashboardPageProps {
+  user: PublicUser | null;
+  checkoutStatus?: string | null;
+  onNavigate: (view: PageView) => void;
+  onOpenConversation: (conversationId: string) => void;
+}
+export function DashboardPage({
+  user,
+  checkoutStatus,
+  onNavigate,
+  onOpenConversation,
+}: DashboardPageProps) {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void fetchDashboard()
+      .then((res) => {
+        setData(res);
+        setError(null);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Erreur de chargement.');
+      })
+      .finally(() => setLoading(false));
+  }, [user?.id]);
+  if (!user) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 py-16 text-center space-y-4">
+        <h1 className="font-display text-2xl font-bold text-white">Tableau de bord</h1>
+        <p className="text-sm text-[#A6A6BC]">
+          Connectez-vous pour accéder à vos statistiques d&apos;utilisation, votre abonnement et
+          vos projets enregistrés.
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigate('connexion')}
+          className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+        >
+          Se connecter
+        </button>
+      </main>
+    );
+  }
+  return (
+    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 space-y-8">
+      {/* Header */}
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#1F1F2D] pb-6">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+            Tableau de bord SaaS
+          </p>
+          <h1 className="mt-1 font-display text-3xl font-bold text-[#FAFAFA]">
+            Bonjour, {user.displayName}
+          </h1>
+          <p className="mt-1 text-sm text-[#A5A5BB]">
+            Vue d&apos;ensemble de votre activité NOVA AI et de votre formule active.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            onClick={() => onNavigate('assistant')}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#7C3AED] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6D28D9] whitespace-nowrap shrink-0"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Nouveau chat
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('business')}
+            className="inline-flex items-center gap-2 rounded-lg border border-[#2B2B3D] bg-[#111117] px-4 py-2 text-sm font-medium text-white hover:border-[#7C3AED] whitespace-nowrap shrink-0"
+          >
+            <Briefcase className="h-4 w-4 text-[#A78BFA]" />
+            Mode Business
+          </button>
+        </div>
+      </div>
+      {checkoutStatus === 'success' && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+          Paiement confirmé par Stripe. Si votre formule ne reflète pas encore la mise à jour,
+          rafraîchissez dans quelques secondes le temps du traitement webhook.
+        </div>
+      )}
+      {user.subscriptionStatus === 'past_due' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
+          <span>
+            Votre paiement Stripe est en attente ou a échoué : les fonctionnalités PRO/BUSINESS
+            sont temporairement bloquées.
+          </span>
+          <button
+            type="button"
+            onClick={() => onNavigate('profil')}
+            className="rounded-md bg-amber-500 px-3 py-1.5 font-semibold text-black"
+          >
+            Régulariser dans Profil
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+      {loading || !data ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="h-28 animate-pulse rounded-xl border border-[#232332] bg-[#111117]"
+            />
+          ))}
+        </div>
+      ) : (
+        <>
+          {/* Real Metrics Strip */}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <p className="text-xs text-[#9E9EB5]">Formule active</p>
+              <p className="mt-2 font-display text-2xl font-bold text-white uppercase">
+                {data.user.effectivePlan}
+              </p>
+              <p className="mt-1 text-xs text-[#A78BFA]">
+                Statut :{' '}
+                {data.user.subscriptionStatus === 'active'
+                  ? data.user.cancelAtPeriodEnd
+                    ? 'Actif (résiliation programmée)'
+                    : 'Actif (Stripe)'
+                  : data.user.effectivePlan === 'free' && data.user.subscriptionStatus === 'inactive'
+                  ? 'Offre Gratuite'
+                  : data.user.subscriptionStatus}
+              </p>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <p className="text-xs text-[#9E9EB5]">Messages aujourd&apos;hui</p>
+              <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
+                {data.stats.messagesToday} / {data.quota.chatLimit}
+              </p>
+              <p className="mt-1 text-xs text-[#8D8DA4]">
+                Total cumulé :{' '}
+                <span className="font-mono tabular-nums">{data.stats.totalMessages}</span>
+              </p>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <p className="text-xs text-[#9E9EB5]">Conversations sauvegardées</p>
+              <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
+                {data.stats.totalConversations}
+              </p>
+              <button
+                type="button"
+                onClick={() => onNavigate('historique')}
+                className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[#C4B5FD] hover:text-white"
+              >
+                Ouvrir l&apos;historique
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <p className="text-xs text-[#9E9EB5]">Projets Mode Business</p>
+              <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
+                {data.stats.totalBusinessProjects}
+              </p>
+              <p className="mt-1 text-xs text-[#8D8DA4]">
+                Analyses du jour :{' '}
+                <span className="font-mono tabular-nums">
+                  {data.stats.businessToday}/{data.quota.businessLimit}
+                </span>
+              </p>
+            </div>
+          </div>
+          {/* Two Columns: Recent Conversations & Business Projects */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <section className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <History className="h-4 w-4 text-[#A78BFA]" />
+                  <h2 className="font-display text-base font-semibold text-white">
+                    Conversations récentes
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('historique')}
+                  className="text-xs font-medium text-[#C4B5FD] hover:text-white"
+                >
+                  Tout voir
+                </button>
+              </div>
+              {data.recentConversations.length === 0 ? (
+                <div className="rounded-lg border border-[#1E1E2B] bg-[#0B0B10] p-5 text-center text-xs text-[#9E9EB5]">
+                  <p>Aucune conversation pour le moment.</p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('assistant')}
+                    className="mt-3 rounded-md bg-[#7C3AED] px-3.5 py-1.5 font-semibold text-white"
+                  >
+                    Démarrer une discussion
+                  </button>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#1E1E2B]">
+                  {data.recentConversations.map((conv) => (
+                    <button
+                      key={conv.id}
+                      type="button"
+                      onClick={() => onOpenConversation(conv.id)}
+                      className="flex w-full items-center justify-between gap-3 py-3 text-left hover:bg-[#161620] px-2 rounded-md transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-white">{conv.title}</p>
+                        <p className="truncate text-xs text-[#8D8DA4]">
+                          {conv.last_message_preview || 'Conversation sans aperçu'}
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs tabular-nums text-[#9E9EB5] shrink-0">
+                        {new Date(conv.updated_at).toLocaleDateString('fr-FR')}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+            <section className="rounded-xl border border-[#232332] bg-[#111117] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Briefcase className="h-4 w-4 text-[#A78BFA]" />
+                  <h2 className="font-display text-base font-semibold text-white">
+                    Projets Mode Business récents
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('business')}
+                  className="text-xs font-medium text-[#C4B5FD] hover:text-white"
+                >
+                  Ouvrir Mode Business
+                </button>
+              </div>
+              {data.recentProjects.length === 0 ? (
+                <div className="rounded-lg border border-[#1E1E2B] bg-[#0B0B10] p-5 text-center text-xs text-[#9E9EB5]">
+                  <p>Aucun plan business généré pour l&apos;instant.</p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('business')}
+                    className="mt-3 rounded-md bg-[#7C3AED] px-3.5 py-1.5 font-semibold text-white"
+                  >
+                    Structurer un projet
+                  </button>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#1E1E2B]">
+                  {data.recentProjects.map((proj) => (
+                    <div
+                      key={proj.id}
+                      className="flex items-center justify-between gap-3 py-3 px-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-white">{proj.title}</p>
+                        <p className="truncate text-xs text-[#8D8DA4]">
+                          {proj.sector} • Budget{' '}
+                          <span className="font-mono tabular-nums">{proj.budget_eur} €</span>
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs tabular-nums text-[#9E9EB5] shrink-0">
+                        {new Date(proj.created_at).toLocaleDateString('fr-FR')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {data.user.effectivePlan === 'free' && (
+                <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-[#3B2B68] bg-[#161226] p-3.5 text-xs">
+                  <div className="flex items-center gap-2 text-[#E0D6FF]">
+                    <CreditCard className="h-4 w-4 text-[#A78BFA]" />
+                    <span>Passez à PRO ou BUSINESS pour débloquer tous les modules.</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('tarifs')}
+                    className="rounded-md bg-[#7C3AED] px-3 py-1.5 font-semibold text-white whitespace-nowrap shrink-0"
+                  >
+                    Voir les tarifs
+                  </button>
+                </div>
+              )}
+            </section>
+          </div>
+        </>
+      )}
+    </main>
+  );
+}
+‎src/pages/HistoryPage.tsx‎
++245
+Lines changed: 245 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,245 @@
+import { Download, Edit3, MessageSquare, Search, Trash2, Check, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { ConversationSummary, PageView, PublicUser } from '../types/nova';
+import {
+  deleteConversationApi,
+  fetchConversationDetail,
+  fetchConversations,
+  renameConversationApi,
+} from '../utils/api';
+interface HistoryPageProps {
+  user: PublicUser | null;
+  onNavigate: (view: PageView) => void;
+  onOpenConversation: (id: string) => void;
+}
+export function HistoryPage({
+  user,
+  onNavigate,
+  onOpenConversation,
+}: HistoryPageProps) {
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void fetchConversations()
+      .then((res) => setConversations(res.conversations))
+      .finally(() => setLoading(false));
+  }, [user?.id]);
+  if (!user) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 py-16 text-center space-y-4">
+        <h1 className="font-display text-2xl font-bold text-white">
+          Historique des conversations
+        </h1>
+        <p className="text-sm text-[#A6A6BC]">
+          Connectez-vous pour consulter, rechercher, renommer ou exporter vos échanges.
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigate('connexion')}
+          className="rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white"
+        >
+          Se connecter
+        </button>
+      </main>
+    );
+  }
+  const filtered = conversations.filter((c) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      c.title.toLowerCase().includes(q) ||
+      (c.last_message_preview ?? '').toLowerCase().includes(q)
+    );
+  });
+  const handleRename = async (id: string) => {
+    const clean = editingTitle.trim();
+    if (!clean) return;
+    try {
+      const updated = await renameConversationApi(id, clean);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, title: updated.conversation.title } : c))
+      );
+      setEditingId(null);
+    } catch {
+      // ignore
+    }
+  };
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteConversationApi(id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+    } catch {
+      // ignore
+    }
+  };
+  const handleExport = async (id: string, title: string) => {
+    try {
+      const detail = await fetchConversationDetail(id);
+      const md = [
+        `# ${title}`,
+        '',
+        ...detail.messages.map(
+          (m) => `### ${m.role === 'user' ? 'Vous' : 'NOVA AI'}\n\n${m.content}\n`
+        ),
+      ].join('\n');
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'conversation'}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  };
+  return (
+    <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#1F1F2D] pb-5">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+            Archives personnelles
+          </p>
+          <h1 className="mt-1 font-display text-3xl font-bold text-white">
+            Historique des conversations
+          </h1>
+        </div>
+        <button
+          type="button"
+          onClick={() => onNavigate('assistant')}
+          className="inline-flex items-center gap-2 rounded-lg bg-[#7C3AED] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+        >
+          <MessageSquare className="h-4 w-4" />
+          Nouvelle conversation
+        </button>
+      </div>
+      {/* Live Search */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-3 left-3.5 h-4 w-4 text-[#7D7D96]" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher par titre ou mot-clé..."
+          className="w-full rounded-xl border border-[#232332] bg-[#111117] py-2.5 pr-4 pl-10 text-sm text-white placeholder-[#7B7B93] focus:border-[#7C3AED] focus:outline-none"
+        />
+      </div>
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="h-20 animate-pulse rounded-xl border border-[#232332] bg-[#111117]"
+            />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-xl border border-[#232332] bg-[#111117] p-8 text-center text-sm text-[#9E9EB5]">
+          {search
+            ? 'Aucune conversation ne correspond à votre recherche.'
+            : 'Aucune conversation enregistrée pour le moment.'}
+        </div>
+      ) : (
+        <div className="divide-y divide-[#1E1E2B] overflow-hidden rounded-xl border border-[#232332] bg-[#111117]">
+          {filtered.map((conv) => (
+            <div
+              key={conv.id}
+              className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
+            >
+              <div className="min-w-0 flex-1">
+                {editingId === conv.id ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editingTitle}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      className="w-full max-w-sm rounded border border-[#7C3AED] bg-[#0B0B10] px-2.5 py-1 text-sm text-white focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleRename(conv.id)}
+                      className="p-1 text-emerald-400 hover:text-emerald-300"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                      className="p-1 text-[#8D8DA4] hover:text-white"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onOpenConversation(conv.id)}
+                    className="block max-w-full truncate text-left text-sm font-semibold text-white hover:text-[#C4B5FD]"
+                  >
+                    {conv.title}
+                  </button>
+                )}
+                <p className="mt-1 truncate text-xs text-[#8D8DA4]">
+                  {conv.last_message_preview || 'Aucun aperçu'}
+                </p>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="font-mono text-xs tabular-nums text-[#8D8DA4]">
+                  {conv.message_count ?? 0} msg •{' '}
+                  {new Date(conv.updated_at).toLocaleDateString('fr-FR')}
+                </span>
+                <button
+                  type="button"
+                  title="Renommer"
+                  onClick={() => {
+                    setEditingId(conv.id);
+                    setEditingTitle(conv.title);
+                  }}
+                  className="rounded p-1.5 text-[#9E9EB5] hover:bg-[#1B1B26] hover:text-white"
+                >
+                  <Edit3 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  title="Exporter en Markdown"
+                  onClick={() => void handleExport(conv.id, conv.title)}
+                  className="rounded p-1.5 text-[#9E9EB5] hover:bg-[#1B1B26] hover:text-white"
+                >
+                  <Download className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  title="Supprimer"
+                  onClick={() => void handleDelete(conv.id)}
+                  className="rounded p-1.5 text-[#9E9EB5] hover:bg-[#1B1B26] hover:text-red-400"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
+  );
+}
+‎src/pages/ProfilePage.tsx‎
++468
+Lines changed: 468 additions & 0 deletions
+Large diffs are not rendered by default.
+‎src/pages/TarifsPage.tsx‎
++335
+Lines changed: 335 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,335 @@
+import { AlertCircle, Check, CreditCard, ExternalLink, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { BillingInterval, PageView, PlanTier, PublicUser, StripeStatus } from '../types/nova';
+import { ApiError, createStripeCheckout, fetchStripeStatus } from '../utils/api';
+interface TarifsPageProps {
+  user: PublicUser | null;
+  onNavigate: (view: PageView) => void;
+}
+export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
+  const [interval, setInterval] = useState<BillingInterval>('monthly');
+  const [stripeStatus, setStripeStatus] = useState<StripeStatus | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState<PlanTier | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [checkoutUrlFallback, setCheckoutUrlFallback] = useState<string | null>(null);
+  const effectivePlan = user?.effectivePlan ?? 'free';
+  useEffect(() => {
+    void fetchStripeStatus()
+      .then(setStripeStatus)
+      .catch(() => setStripeStatus(null));
+  }, []);
+  const redirectToStripe = (url: string) => {
+    setCheckoutUrlFallback(url);
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.href = url;
+        return;
+      }
+    } catch {
+      // Cross-origin iframe fallback handled by direct target="_top" button below
+    }
+    window.location.assign(url);
+  };
+  const handleSubscribe = async (plan: Exclude<PlanTier, 'free'>) => {
+    setFeedback(null);
+    setCheckoutUrlFallback(null);
+    if (!user) {
+      onNavigate('inscription');
+      return;
+    }
+    setLoadingPlan(plan);
+    try {
+      const session = await createStripeCheckout(plan, interval);
+      redirectToStripe(session.url);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Impossible de lancer le paiement Stripe.';
+      setFeedback(msg);
+    } finally {
+      setLoadingPlan(null);
+    }
+  };
+  const proPrice = interval === 'annual' ? '7,99 €' : '9,99 €';
+  const businessPrice = interval === 'annual' ? '15,99 €' : '19,99 €';
+  return (
+    <main className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
+      <div className="mx-auto max-w-2xl text-center space-y-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
+          Tarifs transparents
+        </p>
+        <h1 className="font-display text-3xl font-bold text-[#FAFAFA] sm:text-4xl">
+          Une formule adaptée à votre rythme d&apos;utilisation.
+        </h1>
+        <p className="text-sm text-[#A8A8BE] sm:text-base">
+          Passez au niveau supérieur à tout moment. Paiements sécurisés par Stripe avec
+          facturation mensuelle ou annuelle (-20 %).
+        </p>
+        {/* Billing Cadence Switch */}
+        <div className="inline-flex items-center rounded-xl border border-[#232332] bg-[#111117] p-1">
+          <button
+            type="button"
+            onClick={() => setInterval('monthly')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
+              interval === 'monthly'
+                ? 'bg-[#7C3AED] text-white'
+                : 'text-[#A8A8BE] hover:text-white'
+            }`}
+          >
+            Mensuel
+          </button>
+          <button
+            type="button"
+            onClick={() => setInterval('annual')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
+              interval === 'annual'
+                ? 'bg-[#7C3AED] text-white'
+                : 'text-[#A8A8BE] hover:text-white'
+            }`}
+          >
+            Annuel (-20 %)
+          </button>
+        </div>
+      </div>
+      {stripeStatus?.stripeConfigured && stripeStatus.stripeMode === 'test' && (
+        <div className="mx-auto mt-8 flex max-w-3xl items-start gap-3 rounded-xl border border-[#3B2B68] bg-[#151125] p-4 text-xs leading-relaxed text-[#DDD6FE]">
+          <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+          <div>
+            <p className="font-semibold text-white">Stripe actif en mode Test</p>
+            <p className="mt-0.5 text-[#C2B8E6]">
+              Les paiements sont connectés à Stripe Checkout en environnement de test. Aucun
+              débit bancaire réel n&apos;est effectué tant que vous utilisez les clés de test.
+            </p>
+          </div>
+        </div>
+      )}
+      {stripeStatus && !stripeStatus.checkoutReady && (
+        <div className="mx-auto mt-8 flex max-w-3xl items-start gap-3 rounded-xl border border-[#32324A] bg-[#111117] p-4 text-xs leading-relaxed text-[#CFCFE2]">
+          <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+          <div>
+            <p className="font-semibold text-white">
+              Configuration Stripe requise pour ouvrir la page de paiement
+            </p>
+            <p className="mt-1 text-[#A4A4BA]">
+              Ajoutez <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> (clé
+              test <code className="font-mono text-[#C4B5FD]">sk_test_...</code>) et{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> (
+              <code className="font-mono text-[#C4B5FD]">whsec_...</code>) dans{' '}
+              <strong>Settings &gt; Secrets</strong>. Les abonnements PRO (9,99 €/mois) et
+              BUSINESS (19,99 €/mois) sont automatiquement créés dans Stripe Checkout dès que la
+              clé serveur est renseignée.
+            </p>
+          </div>
+        </div>
+      )}
+      {checkoutUrlFallback && (
+        <div className="mx-auto mt-6 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#7C3AED] bg-[#17132A] p-4 text-xs text-white">
+          <span>Votre session de paiement sécurisée Stripe est prête.</span>
+          <a
+            href={checkoutUrlFallback}
+            target="_top"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#7C3AED] px-4 py-2 font-semibold text-white hover:bg-[#6D28D9]"
+          >
+            Ouvrir Stripe Checkout
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      )}
+      {feedback && (
+        <div className="mx-auto mt-6 flex max-w-3xl items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+          <span>{feedback}</span>
+        </div>
+      )}
+      <div className="mt-10 grid gap-6 lg:grid-cols-3">
+        {/* GRATUIT */}
+        <div className="flex flex-col justify-between rounded-xl border border-[#232332] bg-[#111117] p-6">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-[#9E9EB5]">
+              Découverte
+            </p>
+            <h2 className="mt-1 font-display text-2xl font-bold text-white">GRATUIT</h2>
+            <div className="mt-4 flex items-baseline gap-1.5">
+              <span className="font-mono text-3xl font-bold tabular-nums text-white">0 €</span>
+              <span className="text-xs text-[#8D8DA4]">/ mois</span>
+            </div>
+            <p className="mt-2 text-xs text-[#A5A5BB]">
+              Pour poser vos questions du quotidien et tester NOVA AI.
+            </p>
+            <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Questions générales &amp; IA standard en streaming</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>15 messages par jour (avec compte gratuit)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>3 analyses Mode Business découverte / jour</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Analyse de document jusqu&apos;à 40 Ko</span>
+              </li>
+            </ul>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate(user ? 'assistant' : 'inscription')}
+            className="mt-8 w-full rounded-lg border border-[#2C2C40] bg-[#171722] py-2.5 text-sm font-semibold text-white hover:border-[#7C3AED] transition-colors"
+          >
+            {user && effectivePlan === 'free' ? 'Formule active' : "S'abonner gratuitement"}
+          </button>
+        </div>
+        {/* PRO */}
+        <div className="flex flex-col justify-between rounded-xl border border-[#7C3AED] bg-[#141122] p-6">
+          <div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[#C4B5FD]">
+                Recommandé
+              </p>
+              {interval === 'annual' && (
+                <span className="font-mono text-xs text-emerald-400">95,88 €/an</span>
+              )}
+            </div>
+            <h2 className="mt-1 font-display text-2xl font-bold text-white">PRO</h2>
+            <div className="mt-4 flex items-baseline gap-1.5">
+              <span className="font-mono text-3xl font-bold tabular-nums text-white">
+                {proPrice}
+              </span>
+              <span className="text-xs text-[#B5B5CC]">/ mois</span>
+            </div>
+            <p className="mt-2 text-xs text-[#B8B8D0]">
+              Pour entrepreneurs, créateurs et professionnels actifs.
+            </p>
+            <ul className="mt-6 space-y-3 text-sm text-[#ECECF6]">
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+                <span>Questions illimitées (usage normal jusqu&apos;à 500/jour)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+                <span>Mode Business avancé &amp; Business Plans complets</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+                <span>Stratégies marketing, e-commerce &amp; concurrence</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+                <span>Réponses prioritaires &amp; historique complet</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
+                <span>Génération &amp; export Markdown + docs jusqu&apos;à 150 Ko</span>
+              </li>
+            </ul>
+          </div>
+          <button
+            type="button"
+            disabled={loadingPlan === 'pro' || effectivePlan === 'pro'}
+            onClick={() => void handleSubscribe('pro')}
+            className="mt-8 w-full rounded-lg bg-[#7C3AED] py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-55 transition-colors"
+          >
+            {effectivePlan === 'pro'
+              ? 'Formule active'
+              : loadingPlan === 'pro'
+              ? 'Redirection Stripe...'
+              : "S'abonner"}
+          </button>
+        </div>
+        {/* BUSINESS */}
+        <div className="flex flex-col justify-between rounded-xl border border-[#232332] bg-[#111117] p-6">
+          <div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[#9E9EB5]">
+                Direction &amp; Croissance
+              </p>
+              {interval === 'annual' && (
+                <span className="font-mono text-xs text-emerald-400">191,88 €/an</span>
+              )}
+            </div>
+            <h2 className="mt-1 font-display text-2xl font-bold text-white">BUSINESS</h2>
+            <div className="mt-4 flex items-baseline gap-1.5">
+              <span className="font-mono text-3xl font-bold tabular-nums text-white">
+                {businessPrice}
+              </span>
+              <span className="text-xs text-[#8D8DA4]">/ mois</span>
+            </div>
+            <p className="mt-2 text-xs text-[#A5A5BB]">
+              Pour fondateurs et entreprises exigeant une analyse stratégique complète.
+            </p>
+            <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Toutes les fonctionnalités PRO incluses (2 000 msg/jour)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Assistant complet création d&apos;entreprise</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Analyses commerciales &amp; études de marché avancées</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Plans de développement &amp; stratégies commerciales</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
+                <span>Documents jusqu&apos;à 300 Ko &amp; priorité maximale</span>
+              </li>
+            </ul>
+          </div>
+          <button
+            type="button"
+            disabled={loadingPlan === 'business' || effectivePlan === 'business'}
+            onClick={() => void handleSubscribe('business')}
+            className="mt-8 w-full rounded-lg bg-[#FAFAFA] py-2.5 text-sm font-semibold text-[#08080B] hover:bg-[#E4E4EE] disabled:opacity-55 transition-colors"
+          >
+            {effectivePlan === 'business'
+              ? 'Formule active'
+              : loadingPlan === 'business'
+              ? 'Redirection Stripe...'
+              : "S'abonner"}
+          </button>
+        </div>
+      </div>
+      <div className="mt-10 flex items-center justify-center gap-2 text-xs text-[#8E8EA6]">
+        <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />
+        <span>
+          Résiliation possible à tout moment depuis votre Profil ou le portail client Stripe.
+          Aucun engagement caché.
+        </span>
+      </div>
+    </main>
+  );
+}
+‎src/types/node-sqlite.d.ts‎
++22
+Lines changed: 22 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,22 @@
+declare module 'node:sqlite' {
+  export interface SQLInputValue {}
+  export type SupportedValueType = null | number | bigint | string | Uint8Array;
+  export interface StatementResultingChanges {
+    changes: number | bigint;
+    lastInsertRowid: number | bigint;
+  }
+  export class StatementSync {
+    run(...params: unknown[]): StatementResultingChanges;
+    get(...params: unknown[]): Record<string, unknown> | undefined;
+    all(...params: unknown[]): Record<string, unknown>[];
+  }
+  export class DatabaseSync {
+    constructor(path: string, options?: { open?: boolean; readOnly?: boolean });
+    exec(sql: string): void;
+    prepare(sql: string): StatementSync;
+    close(): void;
+  }
+}
+‎src/types/nova.ts‎
++135
+Lines changed: 135 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,135 @@
+export type PageView =
+  | 'accueil'
+  | 'assistant'
+  | 'business'
+  | 'tarifs'
+  | 'connexion'
+  | 'inscription'
+  | 'dashboard'
+  | 'historique'
+  | 'profil'
+  | 'paiement-succes'
+  | 'paiement-echec';
+export type PlanTier = 'free' | 'pro' | 'business';
+export type BillingInterval = 'monthly' | 'annual';
+export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
+export interface PublicUser {
+  id: string;
+  email: string;
+  displayName: string;
+  companyName: string;
+  plan: PlanTier;
+  effectivePlan: PlanTier;
+  billingInterval: BillingInterval;
+  subscriptionStatus: SubscriptionStatus;
+  cancelAtPeriodEnd: boolean;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  currentPeriodEnd: string | null;
+  createdAt: string;
+}
+export interface SubscriptionRecord {
+  id: string;
+  user_id: string;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  stripe_checkout_session_id: string | null;
+  plan: PlanTier;
+  billing_interval: BillingInterval;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  cancel_at_period_end: number;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  canceled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface QuotaSnapshot {
+  plan: PlanTier;
+  isAuthenticated: boolean;
+  chatUsed: number;
+  chatLimit: number;
+  chatRemaining: number;
+  businessUsed: number;
+  businessLimit: number;
+  businessRemaining: number;
+  maxAttachmentBytes: number;
+  exportEnabled: boolean;
+  fullBusinessSuite: boolean;
+  companyCreationSuite: boolean;
+}
+export interface SourceLink {
+  title: string;
+  url: string;
+}
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  sources?: SourceLink[];
+  attachmentName?: string | null;
+  modelUsed?: string | null;
+  latencyMs?: number | null;
+  createdAt: string;
+  isStreaming?: boolean;
+  isError?: boolean;
+}
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  category: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  last_message_preview?: string;
+}
+export interface BusinessProject {
+  id: string;
+  module_key: string;
+  title: string;
+  sector: string;
+  budget_eur: number;
+  goal: string;
+  content_markdown: string;
+  model_used: string | null;
+  created_at: string;
+}
+export interface StripeStatus {
+  stripeConfigured: boolean;
+  stripeMode: 'test' | 'live' | 'unconfigured';
+  webhookConfigured: boolean;
+  checkoutReady: boolean;
+  usingConfiguredPriceIds: boolean;
+  prices: {
+    proMonthly: boolean;
+    proAnnual: boolean;
+    businessMonthly: boolean;
+    businessAnnual: boolean;
+  };
+}
+export interface DashboardData {
+  user: PublicUser;
+  quota: QuotaSnapshot;
+  stats: {
+    messagesToday: number;
+    businessToday: number;
+    totalMessages: number;
+    totalConversations: number;
+    totalBusinessProjects: number;
+  };
+  recentConversations: ConversationSummary[];
+  recentProjects: BusinessProject[];
+  subscriptions: SubscriptionRecord[];
+}
+‎src/utils/api.ts‎
++385
+Lines changed: 385 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,385 @@
+import type {
+  BillingInterval,
+  BusinessProject,
+  ChatMessage,
+  ConversationSummary,
+  DashboardData,
+  PlanTier,
+  PublicUser,
+  QuotaSnapshot,
+  SourceLink,
+  StripeStatus,
+  SubscriptionRecord,
+} from '../types/nova';
+export class ApiError extends Error {
+  status: number;
+  code: string;
+  constructor(message: string, status = 500, code = 'API_ERROR') {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(url, {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers || {}),
+    },
+    ...init,
+  });
+  const text = await res.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    parsed = {};
+  }
+  if (!res.ok) {
+    throw new ApiError(
+      String(parsed.error || `Erreur serveur (${res.status})`),
+      res.status,
+      String(parsed.code || 'HTTP_ERROR')
+    );
+  }
+  return parsed as T;
+}
+export async function fetchAuthMe(): Promise<{
+  user: PublicUser | null;
+  quota: QuotaSnapshot;
+}> {
+  return requestJson('/api/auth/me');
+}
+export async function registerUser(payload: {
+  email: string;
+  password: string;
+  displayName: string;
+  companyName?: string;
+}): Promise<{ user: PublicUser; quota: QuotaSnapshot }> {
+  return requestJson('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export async function loginUser(payload: {
+  email: string;
+  password: string;
+}): Promise<{ user: PublicUser; quota: QuotaSnapshot }> {
+  return requestJson('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+export async function logoutUser(): Promise<void> {
+  await requestJson('/api/auth/logout', { method: 'POST' });
+}
+export async function updateProfile(payload: {
+  displayName?: string;
+  companyName?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}): Promise<{ user: PublicUser; quota: QuotaSnapshot }> {
+  return requestJson('/api/auth/profile', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+export async function fetchDashboard(): Promise<DashboardData> {
+  return requestJson('/api/dashboard');
+}
+export async function fetchConversations(): Promise<{
+  conversations: ConversationSummary[];
+}> {
+  return requestJson('/api/conversations');
+}
+export async function fetchConversationDetail(id: string): Promise<{
+  conversation: ConversationSummary;
+  messages: ChatMessage[];
+}> {
+  return requestJson(`/api/conversations/${encodeURIComponent(id)}`);
+}
+export async function renameConversationApi(
+  id: string,
+  title: string
+): Promise<{ conversation: ConversationSummary }> {
+  return requestJson(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
+}
+export async function deleteConversationApi(id: string): Promise<void> {
+  await requestJson(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+export async function fetchBusinessProjects(): Promise<{
+  projects: BusinessProject[];
+}> {
+  return requestJson('/api/business/projects');
+}
+export async function deleteBusinessProjectApi(id: string): Promise<void> {
+  await requestJson(`/api/business/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+export async function fetchStripeStatus(): Promise<StripeStatus> {
+  return requestJson('/api/stripe/status');
+}
+export async function createStripeCheckout(
+  plan: Exclude<PlanTier, 'free'>,
+  interval: BillingInterval
+): Promise<{ url: string; sessionId: string; mode: 'test' | 'live' }> {
+  return requestJson('/api/stripe/create-checkout-session', {
+    method: 'POST',
+    body: JSON.stringify({ plan, interval }),
+  });
+}
+export async function verifyStripeCheckoutSession(sessionId: string): Promise<{
+  verified: boolean;
+  paymentStatus: string;
+  plan: PlanTier;
+  interval: BillingInterval;
+  user: PublicUser;
+  quota: QuotaSnapshot;
+}> {
+  return requestJson(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+}
+export async function createStripePortal(): Promise<{ url: string }> {
+  return requestJson('/api/stripe/create-portal-session', {
+    method: 'POST',
+  });
+}
+export async function cancelStripeSubscription(): Promise<{
+  user: PublicUser;
+  quota: QuotaSnapshot;
+  subscriptions: SubscriptionRecord[];
+}> {
+  return requestJson('/api/stripe/cancel-subscription', { method: 'POST' });
+}
+export async function reactivateStripeSubscription(): Promise<{
+  user: PublicUser;
+  quota: QuotaSnapshot;
+  subscriptions: SubscriptionRecord[];
+}> {
+  return requestJson('/api/stripe/reactivate-subscription', { method: 'POST' });
+}
+export async function fetchUserSubscriptions(): Promise<{
+  subscriptions: SubscriptionRecord[];
+}> {
+  return requestJson('/api/stripe/subscriptions');
+}
+async function consumeSseStream(
+  url: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+  handlers: {
+    onStatus?: (label: string, conversationId?: string | null) => void;
+    onMeta?: (model: string, conversationId?: string | null) => void;
+    onDelta: (delta: string) => void;
+    onSources?: (sources: SourceLink[]) => void;
+    onDone: (payload: Record<string, unknown>) => void;
+  }
+): Promise<void> {
+  const res = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let errObj: Record<string, unknown> = {};
+    try {
+      errObj = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      errObj = {};
+    }
+    throw new ApiError(
+      String(errObj.error || `Erreur serveur (${res.status})`),
+      res.status,
+      String(errObj.code || 'STREAM_HTTP_ERROR')
+    );
+  }
+  if (!res.body) {
+    throw new ApiError('Flux de réponse indisponible.', 500, 'NO_STREAM_BODY');
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex = buffer.indexOf('\n\n');
+    while (sepIndex !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex).trim();
+      buffer = buffer.slice(sepIndex + 2);
+      sepIndex = buffer.indexOf('\n\n');
+      if (!rawEvent) continue;
+      for (const line of rawEvent.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr) continue;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(jsonStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        const type = String(event.type || '');
+        if (type === 'status') {
+          handlers.onStatus?.(
+            String(event.label || 'NOVA réfléchit...'),
+            (event.conversationId as string | null | undefined) ?? null
+          );
+        } else if (type === 'meta') {
+          handlers.onMeta?.(
+            String(event.model || ''),
+            (event.conversationId as string | null | undefined) ?? null
+          );
+        } else if (type === 'delta') {
+          const txt = typeof event.text === 'string' ? event.text : '';
+          if (txt) handlers.onDelta(txt);
+        } else if (type === 'sources') {
+          if (Array.isArray(event.sources)) {
+            handlers.onSources?.(event.sources as SourceLink[]);
+          }
+        } else if (type === 'done') {
+          handlers.onDone(event);
+        } else if (type === 'error') {
+          throw new ApiError(
+            String(event.error || 'Erreur lors de la génération IA.'),
+            500,
+            String(event.code || 'STREAM_ERROR')
+          );
+        }
+      }
+    }
+  }
+}
+export async function streamChatMessage(params: {
+  message: string;
+  conversationId?: string | null;
+  useWebSearch?: boolean;
+  attachment?: { name: string; content: string } | null;
+  guestHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  signal: AbortSignal;
+  onStatus?: (label: string, conversationId?: string | null) => void;
+  onDelta: (delta: string) => void;
+  onSources?: (sources: SourceLink[]) => void;
+  onDone: (payload: {
+    conversationId?: string | null;
+    modelUsed?: string;
+    latencyMs?: number;
+    quota?: QuotaSnapshot;
+  }) => void;
+}): Promise<void> {
+  await consumeSseStream(
+    '/api/chat',
+    {
+      message: params.message,
+      conversationId: params.conversationId ?? null,
+      useWebSearch: Boolean(params.useWebSearch),
+      attachment: params.attachment ?? null,
+      guestHistory: params.guestHistory ?? [],
+    },
+    params.signal,
+    {
+      onStatus: params.onStatus,
+      onDelta: params.onDelta,
+      onSources: params.onSources,
+      onDone: (payload) =>
+        params.onDone(
+          payload as {
+            conversationId?: string | null;
+            modelUsed?: string;
+            latencyMs?: number;
+            quota?: QuotaSnapshot;
+          }
+        ),
+    }
+  );
+}
+export async function streamBusinessGeneration(params: {
+  moduleKey: string;
+  title: string;
+  sector: string;
+  budgetEur: number;
+  goal: string;
+  contextDetails?: string;
+  useWebSearch?: boolean;
+  signal: AbortSignal;
+  onStatus?: (label: string) => void;
+  onDelta: (delta: string) => void;
+  onSources?: (sources: SourceLink[]) => void;
+  onDone: (payload: {
+    project?: BusinessProject | null;
+    modelUsed?: string;
+    latencyMs?: number;
+    quota?: QuotaSnapshot;
+  }) => void;
+}): Promise<void> {
+  await consumeSseStream(
+    '/api/business/generate',
+    {
+      moduleKey: params.moduleKey,
+      title: params.title,
+      sector: params.sector,
+      budgetEur: params.budgetEur,
+      goal: params.goal,
+      contextDetails: params.contextDetails ?? '',
+      useWebSearch: Boolean(params.useWebSearch),
+    },
+    params.signal,
+    {
+      onStatus: (label) => params.onStatus?.(label),
+      onDelta: params.onDelta,
+      onSources: params.onSources,
+      onDone: (payload) =>
+        params.onDone(
+          payload as {
+            project?: BusinessProject | null;
+            modelUsed?: string;
+            latencyMs?: number;
+            quota?: QuotaSnapshot;
+          }
+        ),
+    }
+  );
+}
+‎tsconfig.json‎
++28
+Lines changed: 28 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "types": ["vite/client"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "exclude": ["dist"]
+}
+‎vite.config.ts‎
++44
+Lines changed: 44 additions & 0 deletions
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,44 @@
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
+import fs from 'fs';
+import path from 'path';
+import {defineConfig} from 'vite';
+export default defineConfig(() => {
+  return {
+    plugins: [
+      react(),
+      tailwindcss(),
+      // Copies src/assets into dist/ so root-relative URLs like
+      // "/src/assets/images/..." (e.g. generate_image output) still resolve
+      // in production builds. Do not remove.
+      {
+        name: 'copy-unbundled-src-assets',
+        apply: 'build',
+        closeBundle(error?: Error): void {
+          if (error) {
+            return;
+          }
+          const distDir = path.resolve(__dirname, 'dist');
+          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distAssets = path.resolve(distDir, 'src/assets');
+          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
+            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+        },
+      },
+    ],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+    server: {
+      // HMR is disabled in AI Studio via DISABLE_HMR env var.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
+      hmr: process.env.DISABLE_HMR !== 'true',
+      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
+      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+  };
+});
+0 commit comments
+Comments
+0
+ (0)
+Comment
+You're not receiving notifications from this thread.
+
+9 files remain
+Copied!

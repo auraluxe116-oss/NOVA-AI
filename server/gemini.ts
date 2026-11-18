@@ -6,7 +6,7 @@ export const GEMINI_MODELS = {
   fallback: 'gemini-3.1-flash-lite',
 } as const;
 
-const TTFT_PRIMARY_MS = 4_500;
+const TTFT_PRIMARY_MS = 5_500;
 const TTFT_FALLBACK_MS = 14_000;
 const STREAM_INACTIVITY_MS = 35_000;
 const COOLDOWN_MS = 90_000;
@@ -26,7 +26,7 @@ function tripPrimaryCooldown(reason: unknown): void {
 }
 
 export function getGeminiApiKey(): string | null {
-  const raw = process.env.GEMINI_API_KEY?.trim();
+  const raw = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)?.trim();
   if (!raw || raw === 'MY_GEMINI_API_KEY') return null;
   return raw;
 }

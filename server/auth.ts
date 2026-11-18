@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import type express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { findUserById, toPublicUser } from './db.js';
+import { DATA_DIR, findUserById, toPublicUser } from './db.js';
 import type { PublicUser, UserRecord } from './types.js';
 
 const SESSION_COOKIE_NAME = 'nova_session';
@@ -13,17 +13,35 @@ function getSessionSecret(): Buffer {
   if (envSecret && envSecret !== 'REPLACE_WITH_LONG_RANDOM_SECRET' && envSecret.length >= 16) {
     return crypto.createHash('sha256').update(envSecret).digest();
   }
-  const keyFile = path.resolve(process.cwd(), 'data', '.session_key');
-  if (fs.existsSync(keyFile)) {
-    const existing = fs.readFileSync(keyFile, 'utf8').trim();
-    if (existing.length >= 32) {
-      return Buffer.from(existing, 'hex');
+
+  const keyFile = path.join(DATA_DIR, '.session_key');
+  try {
+    if (fs.existsSync(keyFile)) {
+      const existing = fs.readFileSync(keyFile, 'utf8').trim();
+      if (existing.length >= 32) {
+        return Buffer.from(existing, 'hex');
+      }
     }
+    const seedMaterial =
+      process.env.VERCEL === '1'
+        ? crypto
+            .createHash('sha256')
+            .update(
+              `nova-vercel:${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'default'}:${process.env.GEMINI_API_KEY || 'local'}`
+            )
+            .digest('hex')
+        : crypto.randomBytes(32).toString('hex');
+
+    fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+    fs.writeFileSync(keyFile, seedMaterial, { mode: 0o600 });
+    return Buffer.from(seedMaterial, 'hex');
+  } catch {
+    const fallbackMaterial =
+      process.env.GEMINI_API_KEY ||
+      process.env.VERCEL_URL ||
+      crypto.randomBytes(32).toString('hex');
+    return crypto.createHash('sha256').update(`nova-session:${fallbackMaterial}`).digest();
   }
-  const generated = crypto.randomBytes(32).toString('hex');
-  fs.mkdirSync(path.dirname(keyFile), { recursive: true });
-  fs.writeFileSync(keyFile, generated, { mode: 0o600 });
-  return Buffer.from(generated, 'hex');
 }
 
 const SESSION_SECRET_KEY = getSessionSecret();
@@ -152,7 +170,7 @@ export function getClientIp(req: express.Request): string {
   if (typeof forwarded === 'string' && forwarded.length > 0) {
     return forwarded.split(',')[0].trim();
   }
-  return req.ip || req.socket.remoteAddress || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 export function hashIp(ip: string): string {
