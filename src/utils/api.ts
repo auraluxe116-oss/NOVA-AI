@@ -4,10 +4,12 @@ import type {
   ChatMessage,
   ConversationSummary,
   DashboardData,
+  ExperienceLevel,
   PlanTier,
   PublicUser,
   QuotaSnapshot,
   SourceLink,
+  StripeInvoiceSummary,
   StripeStatus,
   SubscriptionRecord,
 } from '../types/nova';
@@ -194,6 +196,13 @@ export async function fetchUserSubscriptions(): Promise<{
   return requestJson('/api/stripe/subscriptions');
 }
 
+export async function fetchStripeInvoices(): Promise<{
+  invoices: StripeInvoiceSummary[];
+  stripeConfigured: boolean;
+}> {
+  return requestJson('/api/stripe/invoices');
+}
+
 async function consumeSseStream(
   url: string,
   body: Record<string, unknown>,
@@ -206,15 +215,48 @@ async function consumeSseStream(
     onDone: (payload: Record<string, unknown>) => void;
   }
 ): Promise<void> {
-  const res = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
+  const internalController = new AbortController();
+  let timedOut = false;
+  const resetWatchdog = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      timedOut = true;
+      internalController.abort();
+    }, 50_000);
+  };
+  let watchdog = setTimeout(() => {
+    timedOut = true;
+    internalController.abort();
+  }, 50_000);
+
+  const onExternalAbort = () => internalController.abort();
+  signal.addEventListener('abort', onExternalAbort, { once: true });
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: internalController.signal,
+    });
+  } catch (err) {
+    clearTimeout(watchdog);
+    signal.removeEventListener('abort', onExternalAbort);
+    if (timedOut) {
+      throw new ApiError(
+        'Le serveur met trop de temps à répondre (délai dépassé). Clique sur Réessayer.',
+        504,
+        'CLIENT_TIMEOUT'
+      );
+    }
+    throw err;
+  }
 
   if (!res.ok) {
+    clearTimeout(watchdog);
+    signal.removeEventListener('abort', onExternalAbort);
     const text = await res.text();
     let errObj: Record<string, unknown> = {};
     try {
@@ -234,6 +276,8 @@ async function consumeSseStream(
   }
 
   if (!res.body) {
+    clearTimeout(watchdog);
+    signal.removeEventListener('abort', onExternalAbort);
     throw new ApiError('Flux de réponse indisponible.', 500, 'NO_STREAM_BODY');
   }
 
@@ -285,23 +329,38 @@ async function consumeSseStream(
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      resetWatchdog();
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
-    let sepIndex = buffer.indexOf('\n\n');
-    while (sepIndex !== -1) {
-      const rawEvent = buffer.slice(0, sepIndex);
-      buffer = buffer.slice(sepIndex + 2);
-      sepIndex = buffer.indexOf('\n\n');
-      dispatchBlock(rawEvent);
+      let sepIndex = buffer.indexOf('\n\n');
+      while (sepIndex !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        sepIndex = buffer.indexOf('\n\n');
+        dispatchBlock(rawEvent);
+      }
     }
-  }
 
-  const tail = (buffer + decoder.decode()).replace(/\r\n/g, '\n').trim();
-  if (tail) {
-    dispatchBlock(tail);
+    const tail = (buffer + decoder.decode()).replace(/\r\n/g, '\n').trim();
+    if (tail) {
+      dispatchBlock(tail);
+    }
+  } catch (err) {
+    if (timedOut) {
+      throw new ApiError(
+        "Le flux de réponse IA a été interrompu après un délai d'inactivité. Clique sur Réessayer.",
+        504,
+        'CLIENT_STREAM_TIMEOUT'
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(watchdog);
+    signal.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -309,6 +368,7 @@ export async function streamChatMessage(params: {
   message: string;
   conversationId?: string | null;
   useWebSearch?: boolean;
+  isRetry?: boolean;
   attachment?: { name: string; content: string } | null;
   guestHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   signal: AbortSignal;
@@ -328,6 +388,7 @@ export async function streamChatMessage(params: {
       message: params.message,
       conversationId: params.conversationId ?? null,
       useWebSearch: Boolean(params.useWebSearch),
+      isRetry: Boolean(params.isRetry),
       attachment: params.attachment ?? null,
       guestHistory: params.guestHistory ?? [],
     },
@@ -355,6 +416,7 @@ export async function streamBusinessGeneration(params: {
   sector: string;
   budgetEur: number;
   goal: string;
+  experienceLevel?: ExperienceLevel;
   contextDetails?: string;
   useWebSearch?: boolean;
   signal: AbortSignal;
@@ -376,6 +438,7 @@ export async function streamBusinessGeneration(params: {
       sector: params.sector,
       budgetEur: params.budgetEur,
       goal: params.goal,
+      experienceLevel: params.experienceLevel ?? 'debutant',
       contextDetails: params.contextDetails ?? '',
       useWebSearch: Boolean(params.useWebSearch),
     },

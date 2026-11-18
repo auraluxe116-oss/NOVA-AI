@@ -8,6 +8,7 @@ interface DashboardPageProps {
   checkoutStatus?: string | null;
   onNavigate: (view: PageView) => void;
   onOpenConversation: (conversationId: string) => void;
+  onOpenBusinessProject?: (projectId: string) => void;
 }
 
 export function DashboardPage({
@@ -15,6 +16,7 @@ export function DashboardPage({
   checkoutStatus,
   onNavigate,
   onOpenConversation,
+  onOpenBusinessProject,
 }: DashboardPageProps) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -275,9 +277,15 @@ export function DashboardPage({
               ) : (
                 <div className="divide-y divide-[#1E1E2B]">
                   {data.recentProjects.map((proj) => (
-                    <div
+                    <button
                       key={proj.id}
-                      className="flex items-center justify-between gap-3 py-3 px-2"
+                      type="button"
+                      onClick={() =>
+                        onOpenBusinessProject
+                          ? onOpenBusinessProject(proj.id)
+                          : onNavigate('business')
+                      }
+                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-3 text-left hover:bg-[#161620] transition-colors"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-white">{proj.title}</p>
@@ -289,7 +297,7 @@ export function DashboardPage({
                       <span className="font-mono text-xs tabular-nums text-[#9E9EB5] shrink-0">
                         {new Date(proj.created_at).toLocaleDateString('fr-FR')}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}

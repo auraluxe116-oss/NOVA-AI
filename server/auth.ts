@@ -133,7 +133,7 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
 export function setSessionCookie(req: express.Request, res: express.Response, userId: string): void {
   const token = createSessionToken(userId);
   const isHttps =
-    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.VERCEL === '1';
 
   const parts = [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
@@ -150,7 +150,7 @@ export function setSessionCookie(req: express.Request, res: express.Response, us
 
 export function clearSessionCookie(req: express.Request, res: express.Response): void {
   const isHttps =
-    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+    req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.VERCEL === '1';
 
   const parts = [
     `${SESSION_COOKIE_NAME}=`,

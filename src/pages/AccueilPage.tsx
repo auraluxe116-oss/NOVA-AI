@@ -17,6 +17,7 @@ const EXAMPLE_PROMPTS = [
 
 export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPageProps) {
   const [quickInput, setQuickInput] = useState('');
+  const [heroImageError, setHeroImageError] = useState(false);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -114,11 +115,22 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
           {/* Right Architectural Focal Visual */}
           <div className="lg:col-span-5">
             <div className="overflow-hidden rounded-xl border border-[#232332] bg-[#0E0E14]">
-              <img
-                src="/src/assets/images/nova_hero_abstract_1795010116580.jpg"
-                alt="Environnement de travail architectural NOVA AI en noir et violet électrique"
-                className="aspect-[16/10] w-full object-cover"
-              />
+              {!heroImageError ? (
+                <img
+                  src="/src/assets/images/nova_hero_abstract_1795010116580.jpg"
+                  alt="Environnement de travail architectural NOVA AI en noir et violet électrique"
+                  referrerPolicy="no-referrer"
+                  onError={() => setHeroImageError(true)}
+                  className="aspect-[16/10] w-full object-cover"
+                />
+              ) : (
+                <div className="flex aspect-[16/10] w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-[#161227] via-[#111117] to-[#0B0B10] p-6 text-center">
+                  <Zap className="h-7 w-7 text-[#A78BFA]" />
+                  <p className="font-display text-sm font-semibold text-white">
+                    NOVA AI · Plateforme Business &amp; IA
+                  </p>
+                </div>
+              )}
               <div className="border-t border-[#232332] p-5 space-y-3">
                 <div className="flex items-center justify-between text-xs text-[#9E9EB5]">
                   <span>Architecture temps réel</span>

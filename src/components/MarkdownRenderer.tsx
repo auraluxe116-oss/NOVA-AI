@@ -79,13 +79,13 @@ export function MarkdownRenderer({ content, sources }: MarkdownRendererProps) {
             <strong className="font-semibold text-white">{children}</strong>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="my-3 border-l-2 border-[#7C3AED] bg-[#111117] px-3.5 py-2 text-sm text-[#C9C9DA]">
+            <blockquote className="my-3 rounded-lg border border-[#26263A] bg-[#111117] px-3.5 py-2.5 text-sm text-[#C9C9DA]">
               {children}
             </blockquote>
           ),
           table: ({ children }) => (
             <div className="my-3 overflow-x-auto rounded-lg border border-[#232332]">
-              <table className="w-full border-collapse text-left text-xs sm:text-sm">
+              <table className="w-full border-collapse text-left text-xs sm:text-sm tabular-nums">
                 {children}
               </table>
             </div>

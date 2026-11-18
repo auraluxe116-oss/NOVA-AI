@@ -550,7 +550,14 @@ export function listConversationMessages(
 }> {
   const rows = db
     .prepare(
-      `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?`
+      `SELECT * FROM (
+         SELECT *, rowid AS _rid
+         FROM messages
+         WHERE conversation_id = ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?
+       ) sub
+       ORDER BY created_at ASC, _rid ASC`
     )
     .all(conversationId, limit) as unknown as MessageRow[];
 
@@ -574,6 +581,15 @@ export function listConversationMessages(
       createdAt: row.created_at,
     };
   });
+}
+
+export function getLastConversationMessage(conversationId: string): MessageRow | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`
+    )
+    .get(conversationId);
+  return (row as unknown as MessageRow | undefined) ?? null;
 }
 
 export function addMessage(params: {

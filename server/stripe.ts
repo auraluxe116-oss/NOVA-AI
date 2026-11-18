@@ -9,7 +9,13 @@ import {
   updateUserSubscription,
   upsertSubscriptionRecord,
 } from './db.js';
-import type { BillingInterval, PlanTier, PublicUser, SubscriptionStatus } from './types.js';
+import type {
+  BillingInterval,
+  PlanTier,
+  PublicUser,
+  StripeInvoiceSummary,
+  SubscriptionStatus,
+} from './types.js';
 
 function cleanEnv(name: string): string | null {
   const val = process.env[name]?.trim();
@@ -315,6 +321,36 @@ export async function createBillingPortalForUser(params: {
   return { url: session.url };
 }
 
+export async function listStripeInvoicesForUser(
+  user: PublicUser
+): Promise<{ invoices: StripeInvoiceSummary[]; stripeConfigured: boolean }> {
+  const stripe = getStripeClient();
+  if (!stripe) {
+    return { invoices: [], stripeConfigured: false };
+  }
+  if (!user.stripeCustomerId) {
+    return { invoices: [], stripeConfigured: true };
+  }
+
+  const list = await stripe.invoices.list({
+    customer: user.stripeCustomerId,
+    limit: 12,
+  });
+
+  const invoices: StripeInvoiceSummary[] = list.data.map((inv) => ({
+    id: inv.id,
+    number: inv.number ?? null,
+    status: inv.status ?? null,
+    amountPaidCents: inv.amount_paid ?? inv.amount_due ?? 0,
+    currency: inv.currency ?? 'eur',
+    createdAt: new Date(inv.created * 1000).toISOString(),
+    hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
+    invoicePdf: inv.invoice_pdf ?? null,
+  }));
+
+  return { invoices, stripeConfigured: true };
+}
+
 export async function setSubscriptionCancellation(params: {
   userId: string;
   cancelAtPeriodEnd: boolean;
@@ -438,6 +474,26 @@ export async function processStripeWebhook(
           session.payment_status === 'paid';
 
         if (isPaid) {
+          let periodStartIso = new Date().toISOString();
+          let periodEndIso: string | null = null;
+          if (subscriptionId && getStripeClient()) {
+            try {
+              const subDetails = await getStripeClient()!.subscriptions.retrieve(subscriptionId);
+              const subRaw = subDetails as unknown as {
+                current_period_start?: number;
+                current_period_end?: number;
+              };
+              if (typeof subRaw.current_period_start === 'number') {
+                periodStartIso = new Date(subRaw.current_period_start * 1000).toISOString();
+              }
+              if (typeof subRaw.current_period_end === 'number') {
+                periodEndIso = new Date(subRaw.current_period_end * 1000).toISOString();
+              }
+            } catch {
+              // Keep webhook resilient if subscription retrieval fails transiently
+            }
+          }
+
           updateUserSubscription(user.id, {
             plan,
             billingInterval: interval,
@@ -445,6 +501,7 @@ export async function processStripeWebhook(
             cancelAtPeriodEnd: false,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
+            currentPeriodEnd: periodEndIso,
           });
           upsertSubscriptionRecord({
             userId: user.id,
@@ -460,7 +517,8 @@ export async function processStripeWebhook(
             currency: session.currency ?? 'eur',
             status: 'active',
             cancelAtPeriodEnd: false,
-            currentPeriodStart: new Date().toISOString(),
+            currentPeriodStart: periodStartIso,
+            currentPeriodEnd: periodEndIso,
           });
         } else {
           // Payment pending / unpaid: never grant paid access before real payment confirmation
@@ -535,9 +593,17 @@ export async function processStripeWebhook(
           mappedStatus === 'inactive' ||
           event.type === 'customer.subscription.deleted';
 
+        const inferredByAmount: PlanTier | null =
+          unitAmount === 1999 || unitAmount === 19188
+            ? 'business'
+            : unitAmount === 999 || unitAmount === 9588
+            ? 'pro'
+            : null;
+
         const inferredPlan: PlanTier = isRevoked
           ? 'free'
           : inferPlanFromPriceId(firstPrice) ??
+            inferredByAmount ??
             (metaPlan === 'business'
               ? 'business'
               : metaPlan === 'pro'

@@ -1,12 +1,62 @@
 import { AlertCircle, Check, CreditCard, ExternalLink, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { BillingInterval, PageView, PlanTier, PublicUser, StripeStatus } from '../types/nova';
-import { ApiError, createStripeCheckout, fetchStripeStatus } from '../utils/api';
+import { ApiError, createStripeCheckout, createStripePortal, fetchStripeStatus } from '../utils/api';
 
 interface TarifsPageProps {
   user: PublicUser | null;
   onNavigate: (view: PageView) => void;
 }
+
+const COMPARISON_ROWS: Array<{
+  feature: string;
+  free: string;
+  pro: string;
+  business: string;
+}> = [
+  {
+    feature: 'Messages Assistant IA',
+    free: '15 / jour (5 invité)',
+    pro: '500 / jour',
+    business: '2 000 / jour',
+  },
+  {
+    feature: 'Analyses Mode Business',
+    free: '3 / jour (1 invité)',
+    pro: '100 / jour',
+    business: '300 / jour',
+  },
+  {
+    feature: 'Documents joints max',
+    free: '40 Ko',
+    pro: '150 Ko',
+    business: '300 Ko',
+  },
+  {
+    feature: 'Propositions, factures & devis',
+    free: 'Inclus',
+    pro: 'Inclus + Export .md',
+    business: 'Inclus + Export .md',
+  },
+  {
+    feature: 'Business Plans & E-commerce',
+    free: 'Non inclus',
+    pro: 'Inclus',
+    business: 'Inclus',
+  },
+  {
+    feature: "Création d'entreprise & Étude de marché",
+    free: 'Non inclus',
+    pro: 'Non inclus',
+    business: 'Inclus (priorité max)',
+  },
+  {
+    feature: 'Factures & gestion Stripe',
+    free: '—',
+    pro: 'Portail client Stripe',
+    business: 'Portail client Stripe',
+  },
+];
 
 export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
   const [interval, setInterval] = useState<BillingInterval>('monthly');
@@ -16,6 +66,11 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
   const [checkoutUrlFallback, setCheckoutUrlFallback] = useState<string | null>(null);
 
   const effectivePlan = user?.effectivePlan ?? 'free';
+  const hasActivePaidSubscription =
+    Boolean(user) &&
+    effectivePlan !== 'free' &&
+    user?.subscriptionStatus === 'active' &&
+    Boolean(user?.stripeCustomerId);
 
   useEffect(() => {
     void fetchStripeStatus()
@@ -45,6 +100,11 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
     }
     setLoadingPlan(plan);
     try {
+      if (hasActivePaidSubscription) {
+        const portal = await createStripePortal();
+        redirectToStripe(portal.url);
+        return;
+      }
       const session = await createStripeCheckout(plan, interval);
       redirectToStripe(session.url);
     } catch (err) {
@@ -120,16 +180,14 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
           <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
           <div>
             <p className="font-semibold text-white">
-              Configuration Stripe requise pour ouvrir la page de paiement
+              Paiements Stripe en attente de configuration serveur
             </p>
             <p className="mt-1 text-[#A4A4BA]">
-              Ajoutez <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> (clé
-              test <code className="font-mono text-[#C4B5FD]">sk_test_...</code>) et{' '}
-              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> (
-              <code className="font-mono text-[#C4B5FD]">whsec_...</code>) dans{' '}
-              <strong>Settings &gt; Secrets</strong>. Les abonnements PRO (9,99 €/mois) et
-              BUSINESS (19,99 €/mois) sont automatiquement créés dans Stripe Checkout dès que la
-              clé serveur est renseignée.
+              La passerelle Stripe Checkout et la vérification par webhook s&apos;activent dès
+              que <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> et{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> sont
+              renseignés dans les variables d&apos;environnement du serveur. Aucun paiement
+              fictif n&apos;est jamais simulé.
             </p>
           </div>
         </div>
@@ -137,14 +195,14 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
 
       {checkoutUrlFallback && (
         <div className="mx-auto mt-6 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#7C3AED] bg-[#17132A] p-4 text-xs text-white">
-          <span>Votre session de paiement sécurisée Stripe est prête.</span>
+          <span>Votre session sécurisée Stripe est prête.</span>
           <a
             href={checkoutUrlFallback}
             target="_top"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#7C3AED] px-4 py-2 font-semibold text-white hover:bg-[#6D28D9]"
           >
-            Ouvrir Stripe Checkout
+            Ouvrir Stripe
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>
@@ -176,19 +234,19 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Questions générales &amp; IA standard en streaming</span>
+                <span>Questions générales &amp; IA en streaming</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>15 messages par jour (avec compte gratuit)</span>
+                <span>15 messages / jour (5 / jour sans compte)</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>3 analyses Mode Business découverte / jour</span>
+                <span>3 analyses Mode Business / jour (1 sans compte)</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Analyse de document jusqu&apos;à 40 Ko</span>
+                <span>Propositions, factures rapides &amp; docs 40 Ko max</span>
               </li>
             </ul>
           </div>
@@ -210,7 +268,9 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
                 Recommandé
               </p>
               {interval === 'annual' && (
-                <span className="font-mono text-xs text-emerald-400">95,88 €/an</span>
+                <span className="font-mono text-xs tabular-nums text-emerald-400">
+                  95,88 €/an
+                </span>
               )}
             </div>
             <h2 className="mt-1 font-display text-2xl font-bold text-white">PRO</h2>
@@ -227,7 +287,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
             <ul className="mt-6 space-y-3 text-sm text-[#ECECF6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Questions illimitées (usage normal jusqu&apos;à 500/jour)</span>
+                <span>500 messages / jour et 100 analyses Business / jour</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
@@ -243,7 +303,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Génération &amp; export Markdown + docs jusqu&apos;à 150 Ko</span>
+                <span>Export Markdown &amp; documents jusqu&apos;à 150 Ko</span>
               </li>
             </ul>
           </div>
@@ -258,6 +318,8 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               ? 'Formule active'
               : loadingPlan === 'pro'
               ? 'Redirection Stripe...'
+              : hasActivePaidSubscription
+              ? 'Changer via Portail Stripe'
               : "S'abonner"}
           </button>
         </div>
@@ -270,7 +332,9 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
                 Direction &amp; Croissance
               </p>
               {interval === 'annual' && (
-                <span className="font-mono text-xs text-emerald-400">191,88 €/an</span>
+                <span className="font-mono text-xs tabular-nums text-emerald-400">
+                  191,88 €/an
+                </span>
               )}
             </div>
             <h2 className="mt-1 font-display text-2xl font-bold text-white">BUSINESS</h2>
@@ -287,7 +351,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Toutes les fonctionnalités PRO incluses (2 000 msg/jour)</span>
+                <span>2 000 messages / jour et 300 analyses Business / jour</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
@@ -318,10 +382,43 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               ? 'Formule active'
               : loadingPlan === 'business'
               ? 'Redirection Stripe...'
+              : hasActivePaidSubscription
+              ? 'Passer à BUSINESS (Portail Stripe)'
               : "S'abonner"}
           </button>
         </div>
       </div>
+
+      {/* Limits & Comparison Matrix */}
+      <section className="mt-14 rounded-xl border border-[#232332] bg-[#111117] overflow-hidden">
+        <div className="border-b border-[#1F1F2D] px-6 py-4">
+          <h2 className="font-display text-lg font-semibold text-white">
+            Comparatif détaillé des limites et droits
+          </h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-xs sm:text-sm tabular-nums">
+            <thead>
+              <tr className="border-b border-[#232332] bg-[#0E0E14] text-[#FAFAFA]">
+                <th className="px-6 py-3 font-semibold">Capacité / Limite</th>
+                <th className="px-6 py-3 font-semibold">Gratuit</th>
+                <th className="px-6 py-3 font-semibold text-[#C4B5FD]">Pro</th>
+                <th className="px-6 py-3 font-semibold">Business</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#1E1E2B]">
+              {COMPARISON_ROWS.map((row) => (
+                <tr key={row.feature} className="hover:bg-[#151520]">
+                  <td className="px-6 py-3 font-medium text-[#E8E8F2]">{row.feature}</td>
+                  <td className="px-6 py-3 text-[#A5A5BB]">{row.free}</td>
+                  <td className="px-6 py-3 text-[#DDD6FE]">{row.pro}</td>
+                  <td className="px-6 py-3 text-[#FAFAFA]">{row.business}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <div className="mt-10 flex items-center justify-center gap-2 text-xs text-[#8E8EA6]">
         <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />

@@ -2,7 +2,10 @@ import {
   AlertCircle,
   Check,
   Copy,
+  Edit3,
   Globe,
+  History,
+  Loader2,
   MessageSquarePlus,
   Paperclip,
   RefreshCw,
@@ -26,6 +29,7 @@ import {
   deleteConversationApi,
   fetchConversationDetail,
   fetchConversations,
+  renameConversationApi,
   streamChatMessage,
 } from '../utils/api';
 
@@ -37,6 +41,12 @@ interface AssistantPageProps {
   onClearInitialPrompt: () => void;
   onQuotaUpdated: (q: QuotaSnapshot) => void;
   onNavigate: (view: PageView) => void;
+}
+
+interface AttachmentPayload {
+  name: string;
+  content: string;
+  sizeBytes: number;
 }
 
 const STARTER_TOPICS = [
@@ -51,9 +61,9 @@ const STARTER_TOPICS = [
       'Compare clairement micro-entreprise, EURL et SASU pour démarrer une activité de conseil en France.',
   },
   {
-    category: 'Marketing',
+    category: 'Vente & Commercial',
     prompt:
-      'Propose une stratégie d’acquisition organique sur 30 jours pour décrocher mes 5 premiers clients.',
+      'Rédige une proposition commerciale claire et structurée pour vendre une prestation de refonte web à une PME.',
   },
   {
     category: 'Programmation',
@@ -76,19 +86,24 @@ export function AssistantPage({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [useWebSearch, setUseWebSearch] = useState(false);
-  const [attachment, setAttachment] = useState<{ name: string; content: string; sizeBytes: number } | null>(
-    null
-  );
+  const [attachment, setAttachment] = useState<AttachmentPayload | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
-  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
+  const [lastFailedRequest, setLastFailedRequest] = useState<{
+    prompt: string;
+    attachment: AttachmentPayload | null;
+  } | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [loadingConv, setLoadingConv] = useState(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState('');
 
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const consumedInitialPromptRef = useRef<string | null>(null);
 
   const loadConversationsList = async () => {
@@ -118,9 +133,17 @@ export function AssistantPage({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, statusLabel]);
 
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
+
   const openConversation = async (id: string) => {
     setLoadingConv(true);
     setErrorBanner(null);
+    setMobileHistoryOpen(false);
     try {
       const detail = await fetchConversationDetail(id);
       setActiveConvId(id);
@@ -139,8 +162,26 @@ export function AssistantPage({
     setActiveConvId(null);
     setMessages([]);
     setErrorBanner(null);
-    setLastFailedPrompt(null);
+    setLastFailedRequest(null);
     setStatusLabel(null);
+    setMobileHistoryOpen(false);
+  };
+
+  const handleRenameConv = async (id: string) => {
+    const clean = renamingTitle.trim();
+    if (!clean) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      const res = await renameConversationApi(id, clean);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, title: res.conversation.title } : c))
+      );
+      setRenamingId(null);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : 'Impossible de renommer la conversation.');
+    }
   };
 
   const handleDeleteConv = async (id: string) => {
@@ -183,18 +224,24 @@ export function AssistantPage({
     }
   };
 
-  const sendMessage = async (promptText: string, isRetry = false) => {
+  const sendMessage = async (
+    promptText: string,
+    options?: { isRetry?: boolean; overrideAttachment?: AttachmentPayload | null }
+  ) => {
     const cleanPrompt = promptText.trim();
     if (!cleanPrompt || isGenerating) return;
 
+    const isRetry = Boolean(options?.isRetry);
+    const currentAttachment =
+      options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
+
     setErrorBanner(null);
-    setLastFailedPrompt(null);
+    setLastFailedRequest(null);
     setIsGenerating(true);
     setStatusLabel('NOVA réfléchit...');
 
     const userMsgId = `u-${Date.now()}`;
     const assistantMsgId = `a-${Date.now() + 1}`;
-    const currentAttachment = attachment;
     if (!isRetry) {
       setInput('');
       setAttachment(null);
@@ -203,7 +250,7 @@ export function AssistantPage({
     const guestHistory = !user
       ? messages
           .filter((m) => !m.isError && !m.isStreaming)
-          .slice(-8)
+          .slice(-12)
           .map((m) => ({ role: m.role, content: m.content }))
       : [];
 
@@ -241,6 +288,7 @@ export function AssistantPage({
         message: cleanPrompt,
         conversationId: activeConvId,
         useWebSearch,
+        isRetry,
         attachment: currentAttachment
           ? { name: currentAttachment.name, content: currentAttachment.content }
           : null,
@@ -306,7 +354,7 @@ export function AssistantPage({
             ? err.message
             : 'Le serveur IA est momentanément indisponible.';
         setErrorBanner(msg);
-        setLastFailedPrompt(cleanPrompt);
+        setLastFailedRequest({ prompt: cleanPrompt, attachment: currentAttachment });
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId
@@ -356,127 +404,230 @@ export function AssistantPage({
   const handleRegenerateLast = () => {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
     if (!lastUser || isGenerating) return;
-    void sendMessage(lastUser.content, true);
+    void sendMessage(lastUser.content, { isRetry: true, overrideAttachment: null });
   };
 
-  return (
-    <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-7xl border-x border-[#1C1C28] bg-[#08080B]">
-      {/* Sidebar Conversations */}
-      <aside className="hidden w-72 shrink-0 flex-col border-r border-[#1F1F2D] bg-[#0B0B10] md:flex">
-        <div className="border-b border-[#1F1F2D] p-3">
-          <button
-            type="button"
-            onClick={handleNewChat}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#7C3AED] px-3.5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] transition-colors"
-          >
-            <MessageSquarePlus className="h-4 w-4" />
-            Nouveau chat
-          </button>
-        </div>
+  const renderSidebarBody = () => (
+    <>
+      <div className="border-b border-[#1F1F2D] p-3">
+        <button
+          type="button"
+          onClick={handleNewChat}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#7C3AED] px-3.5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] transition-colors"
+        >
+          <MessageSquarePlus className="h-4 w-4" />
+          Nouveau chat
+        </button>
+      </div>
 
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-1">
-          {!user ? (
-            <div className="rounded-lg border border-[#232332] bg-[#111117] p-3.5 text-xs leading-relaxed text-[#A8A8BE]">
-              <p className="font-semibold text-[#FAFAFA]">Mode découverte</p>
-              <p className="mt-1">
-                Connectez-vous pour sauvegarder automatiquement toutes vos conversations et
-                retrouver votre historique.
-              </p>
+      <div className="flex-1 overflow-y-auto p-2.5 space-y-1">
+        {!user ? (
+          <div className="rounded-lg border border-[#232332] bg-[#111117] p-3.5 text-xs leading-relaxed text-[#A8A8BE]">
+            <p className="font-semibold text-[#FAFAFA]">Mode découverte</p>
+            <p className="mt-1">
+              Connectez-vous pour sauvegarder automatiquement toutes vos conversations et
+              retrouver votre historique.
+            </p>
+            <button
+              type="button"
+              onClick={() => onNavigate('inscription')}
+              className="mt-3 w-full rounded-md bg-[#1D1D29] py-1.5 font-medium text-[#C4B5FD] hover:bg-[#272738]"
+            >
+              Créer un compte gratuit
+            </button>
+          </div>
+        ) : conversations.length === 0 ? (
+          <p className="px-2 py-4 text-xs text-[#7D7D96]">
+            Aucune conversation enregistrée pour le moment.
+          </p>
+        ) : (
+          conversations.map((conv) => {
+            const active = conv.id === activeConvId;
+            const isRenaming = renamingId === conv.id;
+            return (
+              <div
+                key={conv.id}
+                className={`group flex items-center justify-between gap-1 rounded-lg px-2.5 py-2 text-xs transition-colors ${
+                  active
+                    ? 'bg-[#171722] text-white border border-[#2C2C40]'
+                    : 'text-[#A8A8BE] hover:bg-[#12121A] hover:text-white'
+                }`}
+              >
+                {isRenaming ? (
+                  <div className="flex flex-1 items-center gap-1">
+                    <input
+                      type="text"
+                      value={renamingTitle}
+                      onChange={(e) => setRenamingTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void handleRenameConv(conv.id);
+                        if (e.key === 'Escape') setRenamingId(null);
+                      }}
+                      autoFocus
+                      className="min-w-0 flex-1 rounded border border-[#7C3AED] bg-[#0B0B10] px-2 py-1 text-xs text-white focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleRenameConv(conv.id)}
+                      aria-label="Valider le nom"
+                      className="p-1 text-emerald-400 hover:text-emerald-300"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRenamingId(null)}
+                      aria-label="Annuler"
+                      className="p-1 text-[#8D8DA4] hover:text-white"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void openConversation(conv.id)}
+                      className="flex-1 truncate text-left font-medium"
+                    >
+                      {conv.title}
+                    </button>
+                    <div className="flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRenamingId(conv.id);
+                          setRenamingTitle(conv.title);
+                        }}
+                        aria-label="Renommer la conversation"
+                        className="p-1 text-[#7D7D96] hover:text-white"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteConv(conv.id)}
+                        aria-label="Supprimer la conversation"
+                        className="p-1 text-[#7D7D96] hover:text-red-400"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Real Daily Quota Indicator */}
+      {quota && (
+        <div className="border-t border-[#1F1F2D] p-3.5 text-xs">
+          <div className="flex items-center justify-between text-[#B2B2C6]">
+            <span>Formule {quota.plan.toUpperCase()}</span>
+            <span className="font-mono tabular-nums text-white">
+              {quota.chatRemaining}/{quota.chatLimit}
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#1C1C28]">
+            <div
+              className="h-full bg-[#7C3AED] transition-all"
+              style={{
+                width: `${Math.min(
+                  100,
+                  Math.round((quota.chatUsed / Math.max(1, quota.chatLimit)) * 100)
+                )}%`,
+              }}
+            />
+          </div>
+          <div className="mt-1.5 flex items-center justify-between text-[11px] text-[#7D7D96]">
+            <span>Messages restants aujourd&apos;hui</span>
+            {quota.plan === 'free' && (
               <button
                 type="button"
-                onClick={() => onNavigate('inscription')}
-                className="mt-3 w-full rounded-md bg-[#1D1D29] py-1.5 font-medium text-[#C4B5FD] hover:bg-[#272738]"
+                onClick={() => onNavigate('tarifs')}
+                className="font-medium text-[#A78BFA] hover:text-white"
               >
-                Créer un compte gratuit
+                Évoluer
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <div className="relative mx-auto flex h-[calc(100vh-4rem)] max-w-7xl border-x border-[#1C1C28] bg-[#08080B]">
+      {/* Desktop Sidebar Conversations */}
+      <aside className="hidden w-72 shrink-0 flex-col border-r border-[#1F1F2D] bg-[#0B0B10] md:flex">
+        {renderSidebarBody()}
+      </aside>
+
+      {/* Mobile Slide-Over Conversations Drawer */}
+      {mobileHistoryOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden">
+          <div
+            className="fixed inset-0 bg-black/70"
+            onClick={() => setMobileHistoryOpen(false)}
+          />
+          <aside className="relative z-10 flex h-full w-80 max-w-[85vw] flex-col border-r border-[#232332] bg-[#0B0B10]">
+            <div className="flex items-center justify-between border-b border-[#1F1F2D] px-4 py-3">
+              <span className="font-display text-sm font-semibold text-white">
+                Conversations
+              </span>
+              <button
+                type="button"
+                onClick={() => setMobileHistoryOpen(false)}
+                aria-label="Fermer l'historique"
+                className="rounded p-1 text-[#9E9EB5] hover:text-white"
+              >
+                <X className="h-4 w-4" />
               </button>
             </div>
-          ) : conversations.length === 0 ? (
-            <p className="px-2 py-4 text-xs text-[#7D7D96]">
-              Aucune conversation enregistrée pour le moment.
-            </p>
-          ) : (
-            conversations.map((conv) => {
-              const active = conv.id === activeConvId;
-              return (
-                <div
-                  key={conv.id}
-                  className={`group flex items-center justify-between gap-1 rounded-lg px-2.5 py-2 text-xs transition-colors ${
-                    active
-                      ? 'bg-[#171722] text-white border border-[#2C2C40]'
-                      : 'text-[#A8A8BE] hover:bg-[#12121A] hover:text-white'
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => void openConversation(conv.id)}
-                    className="flex-1 truncate text-left font-medium"
-                  >
-                    {conv.title}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDeleteConv(conv.id)}
-                    aria-label="Supprimer la conversation"
-                    className="opacity-0 group-hover:opacity-100 p-1 text-[#7D7D96] hover:text-red-400 transition-opacity"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              );
-            })
-          )}
+            {renderSidebarBody()}
+          </aside>
         </div>
-
-        {/* Real Daily Quota Indicator */}
-        {quota && (
-          <div className="border-t border-[#1F1F2D] p-3.5 text-xs">
-            <div className="flex items-center justify-between text-[#B2B2C6]">
-              <span>Formule {quota.plan.toUpperCase()}</span>
-              <span className="font-mono tabular-nums text-white">
-                {quota.chatRemaining}/{quota.chatLimit}
-              </span>
-            </div>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#1C1C28]">
-              <div
-                className="h-full bg-[#7C3AED] transition-all"
-                style={{
-                  width: `${Math.min(
-                    100,
-                    Math.round((quota.chatUsed / Math.max(1, quota.chatLimit)) * 100)
-                  )}%`,
-                }}
-              />
-            </div>
-            <p className="mt-1.5 text-[11px] text-[#7D7D96]">
-              Messages restants aujourd&apos;hui
-            </p>
-          </div>
-        )}
-      </aside>
+      )}
 
       {/* Main Chat Pane */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top Context Bar */}
-        <div className="flex items-center justify-between gap-3 border-b border-[#1F1F2D] bg-[#0B0B10] px-4 py-2.5">
+        <div className="flex items-center justify-between gap-2 border-b border-[#1F1F2D] bg-[#0B0B10] px-4 py-2.5">
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
+              onClick={() => setMobileHistoryOpen(true)}
+              aria-label="Ouvrir la liste des conversations"
+              className="md:hidden inline-flex items-center gap-1 rounded-md border border-[#232332] bg-[#111117] px-2.5 py-1.5 text-xs font-medium text-[#D6D6E4] hover:text-white"
+            >
+              <History className="h-3.5 w-3.5 text-[#A78BFA]" />
+              Historique
+            </button>
+            <button
+              type="button"
               onClick={handleNewChat}
-              className="md:hidden inline-flex items-center gap-1.5 rounded-md border border-[#232332] bg-[#111117] px-2.5 py-1 text-xs font-medium text-white"
+              className="md:hidden inline-flex items-center gap-1 rounded-md border border-[#232332] bg-[#111117] px-2.5 py-1.5 text-xs font-medium text-white"
             >
               <MessageSquarePlus className="h-3.5 w-3.5 text-[#A78BFA]" />
               Nouveau
             </button>
-            <h1 className="truncate font-display text-sm font-semibold text-[#FAFAFA]">
+            <h1 className="hidden sm:block truncate font-display text-sm font-semibold text-[#FAFAFA]">
               Assistant conversationnel NOVA AI
             </h1>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {quota && (
+              <span className="md:hidden font-mono text-[11px] tabular-nums text-[#A8A8BE]">
+                {quota.chatRemaining}/{quota.chatLimit}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setUseWebSearch((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                 useWebSearch
                   ? 'border-[#7C3AED] bg-[#7C3AED]/15 text-[#DDD6FE]'
                   : 'border-[#232332] bg-[#111117] text-[#A8A8BE] hover:text-white'
@@ -492,7 +643,8 @@ export function AssistantPage({
         <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
           <div className="mx-auto max-w-3xl space-y-6">
             {loadingConv ? (
-              <div className="py-12 text-center text-sm text-[#8F8FA6]">
+              <div className="flex items-center justify-center gap-2 py-12 text-sm text-[#8F8FA6]">
+                <Loader2 className="h-4 w-4 animate-spin text-[#8B5CF6]" />
                 Chargement de la conversation...
               </div>
             ) : messages.length === 0 ? (
@@ -502,8 +654,9 @@ export function AssistantPage({
                     Comment puis-je vous aider aujourd&apos;hui ?
                   </h2>
                   <p className="text-sm text-[#A6A6BC]">
-                    Business, création d&apos;entreprise, marketing, finance, code, sciences ou
-                    analyse de document texte : vos réponses démarrent en streaming temps réel.
+                    Business, création d&apos;entreprise, marketing, finance, propositions
+                    commerciales, code ou analyse de document : vos réponses démarrent en
+                    streaming temps réel.
                   </p>
                 </div>
 
@@ -557,7 +710,7 @@ export function AssistantPage({
 
                         {msg.isStreaming && !msg.content && statusLabel ? (
                           <div className="flex items-center gap-2.5 py-2 text-sm text-[#C4B5FD]">
-                            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[#8B5CF6]" />
+                            <Loader2 className="h-4 w-4 animate-spin text-[#8B5CF6]" />
                             <span>{statusLabel}</span>
                           </div>
                         ) : msg.isError ? (
@@ -565,11 +718,16 @@ export function AssistantPage({
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
                             <div className="space-y-2">
                               <p>{msg.content}</p>
-                              {lastFailedPrompt && (
+                              {lastFailedRequest && (
                                 <button
                                   type="button"
-                                  onClick={() => void sendMessage(lastFailedPrompt, true)}
-                                  className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1 text-xs font-medium text-red-200 hover:bg-red-500/20"
+                                  onClick={() =>
+                                    void sendMessage(lastFailedRequest.prompt, {
+                                      isRetry: true,
+                                      overrideAttachment: lastFailedRequest.attachment,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20"
                                 >
                                   <RotateCcw className="h-3.5 w-3.5" />
                                   Réessayer
@@ -673,6 +831,7 @@ export function AssistantPage({
               </button>
 
               <textarea
+                ref={textareaRef}
                 rows={1}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

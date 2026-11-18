@@ -1,10 +1,28 @@
-import { AlertTriangle, CheckCircle2, CreditCard, ExternalLink, LogOut, RotateCcw, Save, Shield, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CreditCard,
+  ExternalLink,
+  FileText,
+  LogOut,
+  RotateCcw,
+  Save,
+  Shield,
+  XCircle,
+} from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
-import type { PageView, PublicUser, QuotaSnapshot, SubscriptionRecord } from '../types/nova';
+import type {
+  PageView,
+  PublicUser,
+  QuotaSnapshot,
+  StripeInvoiceSummary,
+  SubscriptionRecord,
+} from '../types/nova';
 import {
   ApiError,
   cancelStripeSubscription,
   createStripePortal,
+  fetchStripeInvoices,
   fetchUserSubscriptions,
   logoutUser,
   reactivateStripeSubscription,
@@ -40,12 +58,21 @@ export function ProfilePage({
   const [subActionLoading, setSubActionLoading] = useState(false);
   const [subFeedback, setSubFeedback] = useState<string | null>(null);
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [invoices, setInvoices] = useState<StripeInvoiceSummary[]>([]);
+
+  useEffect(() => {
+    setDisplayName(user?.displayName ?? '');
+    setCompanyName(user?.companyName ?? '');
+  }, [user?.id, user?.displayName, user?.companyName]);
 
   useEffect(() => {
     if (!user) return;
     void fetchUserSubscriptions()
       .then((res) => setSubscriptions(res.subscriptions))
       .catch(() => setSubscriptions([]));
+    void fetchStripeInvoices()
+      .then((res) => setInvoices(res.invoices))
+      .catch(() => setInvoices([]));
   }, [user?.id]);
 
   if (!user) {
@@ -433,6 +460,54 @@ export function ProfilePage({
             </div>
           </div>
 
+          {invoices.length > 0 && (
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-[#A78BFA]" />
+                <h3 className="font-display text-sm font-semibold text-white">
+                  Factures Stripe
+                </h3>
+              </div>
+              <div className="divide-y divide-[#1E1E2B] text-xs">
+                {invoices.map((inv) => (
+                  <div key={inv.id} className="flex items-center justify-between gap-3 py-2.5">
+                    <div>
+                      <p className="font-mono font-medium text-white">
+                        {inv.number || inv.id.slice(0, 14)}
+                      </p>
+                      <p className="font-mono text-[11px] tabular-nums text-[#8D8DA4]">
+                        {(inv.amountPaidCents / 100).toFixed(2)} {inv.currency.toUpperCase()} ·{' '}
+                        {new Date(inv.createdAt).toLocaleDateString('fr-FR')}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {inv.hostedInvoiceUrl && (
+                        <a
+                          href={inv.hostedInvoiceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded border border-[#2C2C40] bg-[#171722] px-2.5 py-1 text-[11px] font-medium text-[#E0E0EE] hover:border-[#7C3AED]"
+                        >
+                          Voir
+                        </a>
+                      )}
+                      {inv.invoicePdf && (
+                        <a
+                          href={inv.invoicePdf}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded bg-[#7C3AED] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#6D28D9]"
+                        >
+                          PDF
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {subscriptions.length > 0 && (
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5 space-y-3">
               <h3 className="font-display text-sm font-semibold text-white">
@@ -445,8 +520,8 @@ export function ProfilePage({
                       <p className="font-semibold uppercase text-white">
                         {sub.plan} ({sub.billing_interval === 'annual' ? 'Annuel' : 'Mensuel'})
                       </p>
-                      <p className="font-mono text-[11px] text-[#8D8DA4]">
-                        {(sub.amount_cents / 100).toFixed(2)} € •{' '}
+                      <p className="font-mono text-[11px] tabular-nums text-[#8D8DA4]">
+                        {(sub.amount_cents / 100).toFixed(2)} € ·{' '}
                         {new Date(sub.updated_at).toLocaleDateString('fr-FR')}
                       </p>
                     </div>

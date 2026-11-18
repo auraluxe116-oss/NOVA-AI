@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import type { PlanTier, SourceLink } from './types.js';
+import type { ExperienceLevel, PlanTier, SourceLink } from './types.js';
 
 export const GEMINI_MODELS = {
   primary: 'gemini-4-hydrogen',
@@ -119,15 +119,22 @@ export function shouldAutoEnableWebSearch(prompt: string): boolean {
   );
 }
 
-const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI, une intelligence artificielle conversationnelle professionnelle francophone.
+const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI, un assistant et conseiller stratégique francophone de niveau senior.
 
-RÈGLES DE FIABILITÉ ET D'HONNÊTETÉ STRICTES :
-1. Ne jamais inventer de faits, chiffres, dates, lois, statistiques, citations ou URLs.
-2. Si tu ne sais pas ou si une donnée ne peut pas être vérifiée avec certitude, dis-le clairement et sans détour.
-3. Distingue explicitement les faits vérifiés des hypothèses, estimations ou scénarios.
-4. Si l'utilisateur relève une erreur dans une de tes réponses, reconnais-la franchement et corrige-la immédiatement.
-5. Comprends l'intention réelle même si la question est mal formulée, abrégée ou comporte des fautes.
-6. Réponds en français naturel, clair, structuré (titres courts, listes lisibles, blocs de code propres si technique). Adapte la profondeur à la demande : concis pour une question simple, complet et structuré pour un sujet complexe.`;
+DOMAINES D'EXPERTISE :
+- Business & Entrepreneuriat : création d'entreprise (micro-entreprise, EURL, SASU, SAS), validation d'offre, business plans, études de marché, tarification, marges et trésorerie.
+- Marketing & Vente : positionnement, acquisition organique et payante, prospection B2B/B2C, tunnels de conversion, rédaction de propositions commerciales, devis, factures conformes et emails professionnels.
+- Technologie & Produit : architecture logicielle, programmation, automatisation, IA, SQL, sécurité et productivité.
+- Analyse de documents, éducation, sciences et synthèse claire.
+
+RÈGLES DE QUALITÉ, CONTEXTE ET FIABILITÉ :
+1. Exploite pleinement le contexte des messages précédents de la conversation pour maintenir la cohérence (secteur, budget, préférences, ton, niveau technique).
+2. Adapte ton niveau d'explication et tes recommandations au profil et aux moyens de l'utilisateur (ex. solutions gratuites ou low-cost si budget limité).
+3. Ne jamais inventer de faits, chiffres, dates, lois, statistiques, citations ou URLs. Si une donnée ne peut pas être vérifiée avec certitude, indique-le clairement.
+4. Distingue explicitement les faits établis des hypothèses, estimations ou scénarios.
+5. Si l'utilisateur relève une erreur, reconnais-la franchement et corrige-la immédiatement.
+6. Comprends l'intention réelle même si la question est courte, mal formulée ou comporte des fautes.
+7. Réponds en français naturel, précis et directement actionnable (titres courts, tableaux ou listes claires, exemples concrets, code propre). Ajuste la longueur à la demande : direct et synthétique pour une question simple, approfondi et structuré pour un besoin stratégique ou technique.`;
 
 export interface ChatTurnInput {
   role: 'user' | 'assistant';
@@ -137,6 +144,7 @@ export interface ChatTurnInput {
 export interface StreamCallbacks {
   onDelta: (text: string) => void;
   onModelSelected?: (model: string) => void;
+  onStatus?: (label: string) => void;
 }
 
 export interface StreamResult {
@@ -253,6 +261,97 @@ async function streamOnceWithModel(params: {
   }
 }
 
+async function runWithResilientFallback(params: {
+  ai: GoogleGenAI;
+  contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  systemInstruction: string;
+  useWebSearch: boolean;
+  externalSignal?: AbortSignal;
+  callbacks: StreamCallbacks;
+  startedAt: number;
+}): Promise<StreamResult> {
+  const tryOrder: Array<{ model: string; ttftMs: number; label: string }> = isPrimaryHealthy()
+    ? [
+        {
+          model: GEMINI_MODELS.primary,
+          ttftMs: TTFT_PRIMARY_MS,
+          label: 'NOVA réfléchit...',
+        },
+        {
+          model: GEMINI_MODELS.fallback,
+          ttftMs: TTFT_FALLBACK_MS,
+          label: 'Reconnexion automatique sur le moteur rapide...',
+        },
+      ]
+    : [
+        {
+          model: GEMINI_MODELS.fallback,
+          ttftMs: TTFT_FALLBACK_MS,
+          label: 'NOVA réfléchit...',
+        },
+      ];
+
+  let lastError: unknown;
+  let emittedAnyDelta = false;
+
+  for (let i = 0; i < tryOrder.length; i += 1) {
+    const candidate = tryOrder[i];
+    if (!candidate) continue;
+
+    // Up to 2 quick attempts on the fallback candidate if a transient glitch happens before first token
+    const maxAttempts = i === tryOrder.length - 1 ? 2 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        if (i > 0 || attempt > 0) {
+          params.callbacks.onStatus?.(candidate.label);
+        }
+        params.callbacks.onModelSelected?.(candidate.model);
+        const res = await streamOnceWithModel({
+          ai: params.ai,
+          model: candidate.model,
+          contents: params.contents,
+          systemInstruction: params.systemInstruction,
+          useWebSearch: params.useWebSearch,
+          ttftTimeoutMs: candidate.ttftMs,
+          externalSignal: params.externalSignal,
+          onDelta: (delta) => {
+            emittedAnyDelta = true;
+            params.callbacks.onDelta(delta);
+          },
+        });
+
+        return {
+          fullText: res.fullText,
+          sources: res.sources,
+          modelUsed: candidate.model,
+          latencyMs: Date.now() - params.startedAt,
+        };
+      } catch (err) {
+        lastError = err;
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        if (rawMsg === 'CLIENT_ABORTED') {
+          throw err;
+        }
+        const canRecover =
+          !emittedAnyDelta && (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'));
+        if (canRecover && attempt + 1 < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          continue;
+        }
+        if (canRecover && i < tryOrder.length - 1) {
+          if (candidate.model === GEMINI_MODELS.primary) {
+            tripPrimaryCooldown(err);
+          }
+          break;
+        }
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 export async function streamConversationResponse(params: {
   history: ChatTurnInput[];
   userMessage: string;
@@ -272,10 +371,10 @@ export async function streamConversationResponse(params: {
   const startedAt = Date.now();
   const ai = getClient(apiKey);
 
-  // Keep bounded conversation context for maximum speed & low latency (last 10 turns)
-  const boundedHistory = params.history.slice(-10).map((turn) => ({
+  // Keep bounded recent conversation context for high relevance & low latency (last 14 turns)
+  const boundedHistory = params.history.slice(-14).map((turn) => ({
     role: (turn.role === 'assistant' ? 'model' : 'user') as 'user' | 'model',
-    parts: [{ text: turn.content.slice(0, 4000) }],
+    parts: [{ text: turn.content.slice(0, 4500) }],
   }));
 
   const finalUserPrompt = params.attachment
@@ -288,63 +387,19 @@ export async function streamConversationResponse(params: {
   ];
 
   const enableSearch = params.useWebSearch || shouldAutoEnableWebSearch(params.userMessage);
-  const tryOrder: Array<{ model: string; ttftMs: number }> = isPrimaryHealthy()
-    ? [
-        { model: GEMINI_MODELS.primary, ttftMs: TTFT_PRIMARY_MS },
-        { model: GEMINI_MODELS.fallback, ttftMs: TTFT_FALLBACK_MS },
-      ]
-    : [{ model: GEMINI_MODELS.fallback, ttftMs: TTFT_FALLBACK_MS }];
 
-  let lastError: unknown;
-  let emittedAnyDelta = false;
-
-  for (let i = 0; i < tryOrder.length; i += 1) {
-    const candidate = tryOrder[i];
-    if (!candidate) continue;
-
-    try {
-      params.callbacks.onModelSelected?.(candidate.model);
-      const res = await streamOnceWithModel({
-        ai,
-        model: candidate.model,
-        contents,
-        systemInstruction: GENERAL_SYSTEM_INSTRUCTION,
-        useWebSearch: enableSearch,
-        ttftTimeoutMs: candidate.ttftMs,
-        externalSignal: params.externalSignal,
-        onDelta: (delta) => {
-          emittedAnyDelta = true;
-          params.callbacks.onDelta(delta);
-        },
-      });
-
-      return {
-        fullText: res.fullText,
-        sources: res.sources,
-        modelUsed: candidate.model,
-        latencyMs: Date.now() - startedAt,
-      };
-    } catch (err) {
-      lastError = err;
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      if (rawMsg === 'CLIENT_ABORTED') {
-        throw err;
-      }
-      // If we haven't streamed partial text yet and failure is transient or TTFT timeout, fail over immediately
-      if (!emittedAnyDelta && i < tryOrder.length - 1 && (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'))) {
-        if (candidate.model === GEMINI_MODELS.primary) {
-          tripPrimaryCooldown(err);
-        }
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw lastError;
+  return runWithResilientFallback({
+    ai,
+    contents,
+    systemInstruction: GENERAL_SYSTEM_INSTRUCTION,
+    useWebSearch: enableSearch,
+    externalSignal: params.externalSignal,
+    callbacks: params.callbacks,
+    startedAt,
+  });
 }
 
-const BUSINESS_MODULE_LABELS: Record<string, string> = {
+export const BUSINESS_MODULE_LABELS: Record<string, string> = {
   business_ideas: "Génération d'idées de business rentables et réalistes",
   zero_budget: 'Création de business avec 0 € de budget initial',
   business_plan: 'Rédaction de Business Plan complet',
@@ -357,8 +412,26 @@ const BUSINESS_MODULE_LABELS: Record<string, string> = {
   sales_strategy: 'Tunnel de conversion et stratégie de vente',
   low_budget_growth: 'Croissance organique à petit budget',
   action_plan: "Plan d'exécution opérationnel étape par étape",
+  commercial_proposal: 'Rédaction de proposition commerciale & devis structuré',
+  invoice_billing: 'Modèle de facture professionnelle, conditions & relance client',
+  professional_texts: 'Textes professionnels, emails B2B et argumentaires commerciaux',
   company_creation: "Accompagnement complet création d'entreprise & étude de marché",
 };
+
+const EXPERIENCE_LEVEL_LABELS: Record<ExperienceLevel, string> = {
+  debutant:
+    'Débutant (premier projet, privilégier la simplicité, les explications pédagogiques et les risques évitables)',
+  intermediaire:
+    'Intermédiaire (déjà familier avec les bases business, privilégier l’exécution rapide et les leviers mesurables)',
+  confirme:
+    'Confirmé / Dirigeant (aller droit à l’optimisation, KPIs avancés, délégation, marges et structuration)',
+};
+
+const DOCUMENT_MODULES = new Set([
+  'commercial_proposal',
+  'invoice_billing',
+  'professional_texts',
+]);
 
 export async function streamBusinessProject(params: {
   moduleKey: string;
@@ -366,6 +439,7 @@ export async function streamBusinessProject(params: {
   sector: string;
   budgetEur: number;
   goal: string;
+  experienceLevel?: ExperienceLevel;
   contextDetails?: string;
   useWebSearch: boolean;
   externalSignal?: AbortSignal;
@@ -382,12 +456,19 @@ export async function streamBusinessProject(params: {
   const ai = getClient(apiKey);
   const moduleLabel =
     BUSINESS_MODULE_LABELS[params.moduleKey] ?? 'Conseil stratégique & création de projet';
+  const levelKey: ExperienceLevel =
+    params.experienceLevel === 'intermediaire' || params.experienceLevel === 'confirme'
+      ? params.experienceLevel
+      : 'debutant';
+  const levelDescription = EXPERIENCE_LEVEL_LABELS[levelKey];
+  const isDocumentModule = DOCUMENT_MODULES.has(params.moduleKey);
 
-  const systemInstruction = `Tu es NOVA AI Mode Business, un consultant senior en entrepreneuriat, finance d'entreprise, marketing et stratégie commerciale.
+  const systemInstruction = `Tu es NOVA AI Mode Business, un consultant senior en entrepreneuriat, finance d'entreprise, marketing, facturation et stratégie commerciale.
 
 RÈGLES OBLIGATOIRES :
 1. Sois réaliste, concret, chiffré et honnête. Ne fais JAMAIS de promesses de richesse ni de revenus garantis.
-2. Chaque analyse doit impérativement contenir ces 7 sections exactes dans l'ordre, en Markdown clair :
+2. Adapte précisément tes conseils au budget déclaré (${params.budgetEur} €) et au niveau de l'utilisateur (${levelDescription}).
+3. Chaque analyse doit impérativement contenir ces 7 sections exactes dans l'ordre, en Markdown clair :
 ## 1. L'objectif
 ## 2. Le budget nécessaire
 ## 3. Les outils nécessaires
@@ -396,15 +477,21 @@ RÈGLES OBLIGATOIRES :
 ## 6. Les possibilités de revenus
 ## 7. Un plan d'action concret
 
-3. Dans la section 6 (Les possibilités de revenus), précise explicitement qu'aucun gain n'est garanti et distingue clairement hypothèses prudentes et scénarios réalistes.
-4. Dans la section 2, respecte scrupuleusement le budget indiqué par l'utilisateur (${params.budgetEur} €) et détaille les postes de dépenses ou alternatives gratuites si le budget est de 0 €.
-5. Réponds exclusivement en français professionnel, actionnable et structuré.`;
+4. Dans la section 6 (Les possibilités de revenus), précise explicitement qu'aucun gain n'est garanti et distingue clairement hypothèses prudentes et scénarios réalistes.
+5. Dans la section 2, respecte scrupuleusement le budget indiqué (${params.budgetEur} €) et propose des alternatives gratuites si le budget est de 0 €.
+${
+  isDocumentModule
+    ? `6. Comme il s'agit d'un module de rédaction commerciale/facturation, inclus dans la section 7 ("## 7. Un plan d'action concret") un modèle complet prêt à copier/adapter (proposition commerciale, modèle de facture avec mentions obligatoires françaises type SIRET/TVA/conditions de paiement, ou séquences d'emails B2B professionnelles) immédiatement exploitable.`
+    : ''
+}
+7. Réponds exclusivement en français professionnel, actionnable et structuré.`;
 
   const prompt = [
     `Module demandé : ${moduleLabel}`,
-    `Titre du projet : ${params.projectTitle}`,
+    `Titre du projet / document : ${params.projectTitle}`,
     `Secteur / Marché : ${params.sector}`,
     `Budget disponible : ${params.budgetEur} €`,
+    `Niveau de l'utilisateur : ${levelDescription}`,
     `Objectif principal : ${params.goal}`,
     params.contextDetails ? `Précisions complémentaires : ${params.contextDetails}` : '',
     `Génère l'étude complète et actionnable en suivant strictement les 7 sections obligatoires.`,
@@ -413,55 +500,14 @@ RÈGLES OBLIGATOIRES :
     .join('\n');
 
   const contents = [{ role: 'user' as const, parts: [{ text: prompt }] }];
-  const tryOrder: Array<{ model: string; ttftMs: number }> = isPrimaryHealthy()
-    ? [
-        { model: GEMINI_MODELS.primary, ttftMs: TTFT_PRIMARY_MS },
-        { model: GEMINI_MODELS.fallback, ttftMs: TTFT_FALLBACK_MS },
-      ]
-    : [{ model: GEMINI_MODELS.fallback, ttftMs: TTFT_FALLBACK_MS }];
 
-  let lastError: unknown;
-  let emittedAnyDelta = false;
-
-  for (let i = 0; i < tryOrder.length; i += 1) {
-    const candidate = tryOrder[i];
-    if (!candidate) continue;
-
-    try {
-      params.callbacks.onModelSelected?.(candidate.model);
-      const res = await streamOnceWithModel({
-        ai,
-        model: candidate.model,
-        contents,
-        systemInstruction,
-        useWebSearch: params.useWebSearch,
-        ttftTimeoutMs: candidate.ttftMs,
-        externalSignal: params.externalSignal,
-        onDelta: (delta) => {
-          emittedAnyDelta = true;
-          params.callbacks.onDelta(delta);
-        },
-      });
-
-      return {
-        fullText: res.fullText,
-        sources: res.sources,
-        modelUsed: candidate.model,
-        latencyMs: Date.now() - startedAt,
-      };
-    } catch (err) {
-      lastError = err;
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      if (rawMsg === 'CLIENT_ABORTED') throw err;
-      if (!emittedAnyDelta && i < tryOrder.length - 1 && (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'))) {
-        if (candidate.model === GEMINI_MODELS.primary) {
-          tripPrimaryCooldown(err);
-        }
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw lastError;
+  return runWithResilientFallback({
+    ai,
+    contents,
+    systemInstruction,
+    useWebSearch: params.useWebSearch,
+    externalSignal: params.externalSignal,
+    callbacks: params.callbacks,
+    startedAt,
+  });
 }

@@ -22,6 +22,7 @@ import {
   getConversationForUser,
   getDailyUsageCount,
   getDbStorageInfo,
+  getLastConversationMessage,
   getUserDashboardStats,
   listBusinessProjects,
   listConversationMessages,
@@ -33,6 +34,7 @@ import {
   updateUserProfile,
 } from './db.js';
 import {
+  BUSINESS_MODULE_LABELS,
   GEMINI_MODELS,
   getGeminiApiKey,
   mapGeminiErrorMessage,
@@ -43,6 +45,7 @@ import {
   createBillingPortalForUser,
   createCheckoutSessionForUser,
   getStripeConfigStatus,
+  listStripeInvoicesForUser,
   processStripeWebhook,
   resolveAppBaseUrl,
   setSubscriptionCancellation,
@@ -54,6 +57,7 @@ import {
   PLAN_SPECS,
   resolveEffectivePlan,
   type BillingInterval,
+  type ExperienceLevel,
   type PlanTier,
   type PublicUser,
 } from './types.js';
@@ -110,6 +114,12 @@ const PRO_ONLY_BUSINESS_MODULES = new Set([
 export function createApp(): express.Express {
   const app = express();
   app.set('trust proxy', 1);
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
 
   // 1. Stripe Webhook MUST receive raw Buffer BEFORE express.json()
   app.post(
@@ -513,10 +523,35 @@ export function createApp(): express.Express {
           return;
         }
         activeConversationId = existing.id;
-        historyForModel = listConversationMessages(existing.id, 12).map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
+
+        const isRetry = Boolean(req.body?.isRetry);
+        const lastMsg = getLastConversationMessage(existing.id);
+        const alreadyTrailingSameUserPrompt =
+          lastMsg &&
+          lastMsg.role === 'user' &&
+          lastMsg.content.trim() === message;
+
+        if (isRetry && alreadyTrailingSameUserPrompt) {
+          // Load previous turns excluding the trailing unanswered user message so Gemini sees clean history
+          historyForModel = listConversationMessages(existing.id, 15)
+            .filter((m) => m.id !== lastMsg.id)
+            .slice(-14)
+            .map((m) => ({
+              role: m.role,
+              content: m.content,
+            }));
+        } else {
+          historyForModel = listConversationMessages(existing.id, 14).map((m) => ({
+            role: m.role,
+            content: m.content,
+          }));
+          addMessage({
+            conversationId: activeConversationId,
+            role: 'user',
+            content: message,
+            attachmentName: attachment?.name ?? null,
+          });
+        }
       } else {
         const autoTitle = message.replace(/\s+/g, ' ').slice(0, 64);
         const created = createConversation({
@@ -525,17 +560,16 @@ export function createApp(): express.Express {
           category: attachment ? 'document' : 'general',
         });
         activeConversationId = created.id;
+        addMessage({
+          conversationId: activeConversationId,
+          role: 'user',
+          content: message,
+          attachmentName: attachment?.name ?? null,
+        });
       }
-
-      addMessage({
-        conversationId: activeConversationId,
-        role: 'user',
-        content: message,
-        attachmentName: attachment?.name ?? null,
-      });
     } else if (Array.isArray(req.body?.guestHistory)) {
       historyForModel = req.body.guestHistory
-        .slice(-8)
+        .slice(-12)
         .filter(
           (item: unknown): item is { role: 'user' | 'assistant'; content: string } =>
             Boolean(item) &&
@@ -555,7 +589,14 @@ export function createApp(): express.Express {
     res.flushHeaders?.();
 
     const abortController = new AbortController();
+    const keepaliveTimer = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(': keepalive\n\n');
+      }
+    }, 12_000);
+
     res.on('close', () => {
+      clearInterval(keepaliveTimer);
       if (!res.writableEnded) {
         abortController.abort(new Error('CLIENT_ABORTED'));
       }
@@ -576,6 +617,9 @@ export function createApp(): express.Express {
         plan: user ? resolveEffectivePlan(user) : 'free',
         externalSignal: abortController.signal,
         callbacks: {
+          onStatus: (label) => {
+            sendSseEvent(res, { type: 'status', label, conversationId: activeConversationId });
+          },
           onModelSelected: (model) => {
             sendSseEvent(res, { type: 'meta', model, conversationId: activeConversationId });
           },
@@ -628,6 +672,8 @@ export function createApp(): express.Express {
         error: mapped.message,
       });
       res.end();
+    } finally {
+      clearInterval(keepaliveTimer);
     }
   });
 
@@ -682,10 +728,21 @@ export function createApp(): express.Express {
     }
 
     const moduleKey = String(req.body?.moduleKey ?? 'business_ideas').trim();
+    if (!Object.prototype.hasOwnProperty.call(BUSINESS_MODULE_LABELS, moduleKey)) {
+      res.status(400).json({
+        code: 'INVALID_MODULE',
+        error: 'Module Mode Business inconnu.',
+      });
+      return;
+    }
+
     const projectTitle = String(req.body?.title ?? '').trim();
     const sector = String(req.body?.sector ?? '').trim();
     const budgetEur = Number(req.body?.budgetEur ?? 0);
     const goal = String(req.body?.goal ?? '').trim();
+    const rawLevel = String(req.body?.experienceLevel ?? 'debutant').trim();
+    const experienceLevel: ExperienceLevel =
+      rawLevel === 'intermediaire' || rawLevel === 'confirme' ? rawLevel : 'debutant';
     const contextDetails = String(req.body?.contextDetails ?? '').trim().slice(0, 2000);
     const useWebSearch = Boolean(req.body?.useWebSearch);
 
@@ -734,7 +791,14 @@ export function createApp(): express.Express {
     res.flushHeaders?.();
 
     const abortController = new AbortController();
+    const keepaliveTimer = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(': keepalive\n\n');
+      }
+    }, 12_000);
+
     res.on('close', () => {
+      clearInterval(keepaliveTimer);
       if (!res.writableEnded) {
         abortController.abort(new Error('CLIENT_ABORTED'));
       }
@@ -749,10 +813,14 @@ export function createApp(): express.Express {
         sector,
         budgetEur: Number.isFinite(budgetEur) ? Math.max(0, budgetEur) : 0,
         goal,
+        experienceLevel,
         contextDetails,
         useWebSearch,
         externalSignal: abortController.signal,
         callbacks: {
+          onStatus: (label) => {
+            sendSseEvent(res, { type: 'status', label });
+          },
           onModelSelected: (model) => {
             sendSseEvent(res, { type: 'meta', model });
           },
@@ -804,6 +872,8 @@ export function createApp(): express.Express {
         error: mapped.message,
       });
       res.end();
+    } finally {
+      clearInterval(keepaliveTimer);
     }
   });
 
@@ -949,6 +1019,21 @@ export function createApp(): express.Express {
       return;
     }
     res.json({ subscriptions: listUserSubscriptions(user.id) });
+  });
+
+  app.get('/api/stripe/invoices', async (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    try {
+      const result = await listStripeInvoicesForUser(user);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Impossible de charger les factures Stripe.';
+      res.status(400).json({ code: 'STRIPE_INVOICES_ERROR', error: message });
+    }
   });
 
   // 9. API 404 & Error Handlers

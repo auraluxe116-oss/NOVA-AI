@@ -14,6 +14,7 @@ export type PageView =
 export type PlanTier = 'free' | 'pro' | 'business';
 export type BillingInterval = 'monthly' | 'annual';
 export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
+export type ExperienceLevel = 'debutant' | 'intermediaire' | 'confirme';
 
 export interface PublicUser {
   id: string;
@@ -117,6 +118,17 @@ export interface StripeStatus {
     businessMonthly: boolean;
     businessAnnual: boolean;
   };
+}
+
+export interface StripeInvoiceSummary {
+  id: string;
+  number: string | null;
+  status: string | null;
+  amountPaidCents: number;
+  currency: string;
+  createdAt: string;
+  hostedInvoiceUrl: string | null;
+  invoicePdf: string | null;
 }
 
 export interface DashboardData {

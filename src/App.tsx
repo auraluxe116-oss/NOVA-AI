@@ -55,6 +55,7 @@ export function App() {
 
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [openConversationId, setOpenConversationId] = useState<string | null>(null);
+  const [openBusinessProjectId, setOpenBusinessProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchAuthMe()
@@ -95,6 +96,11 @@ export function App() {
     navigate('assistant');
   };
 
+  const handleOpenBusinessProject = (id: string) => {
+    setOpenBusinessProjectId(id);
+    navigate('business');
+  };
+
   return (
     <div className="min-h-screen bg-[#08080B] text-[#FAFAFA] flex flex-col">
       <TopNav activeView={activeView} user={user} onNavigate={navigate} />
@@ -129,6 +135,9 @@ export function App() {
             <BusinessModePage
               user={user}
               quota={quota}
+              initialProjectId={openBusinessProjectId}
+              onClearInitialProject={() => setOpenBusinessProjectId(null)}
+              onLaunchPrompt={handleLaunchPrompt}
               onQuotaUpdated={(q) => setQuota(q)}
               onNavigate={navigate}
             />
@@ -172,6 +181,7 @@ export function App() {
               checkoutStatus={checkoutStatus}
               onNavigate={navigate}
               onOpenConversation={handleOpenConversation}
+              onOpenBusinessProject={handleOpenBusinessProject}
             />
           )}
 
