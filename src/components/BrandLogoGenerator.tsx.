@@ -1,15 +1,17 @@
-
+import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import { useState } from 'react';
-
+import { BrandLogoGenerator } from '../components/BrandLogoGenerator';
 const styles = ['Minimal', 'Premium', 'Tech'] as const;
-
+{/* Interactive Tool Card: Margin Calculator & Quick Invoice Builder */}
 export function BrandLogoGenerator() {
   const [name, setName] = useState('NOVA');
   const [slogan, setSlogan] = useState('INNOVATION & BUSINESS');
   const [color, setColor] = useState('#8B5CF6');
   const [background, setBackground] = useState('#111117');
   const [style, setStyle] = useState<(typeof styles)[number]>('Tech');
-
+{selectedModule === 'brand_creation' && (
+  <BrandLogoGenerator />
+)}
   const initial = (name.trim()[0] || 'N').toUpperCase();
 
   const escapeXml = (value: string) =>
