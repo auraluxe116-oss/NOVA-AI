@@ -1,0 +1,6 @@
+{
+  "name": "DIGIVORA AI",
+  "description": "Assistant IA de création de scripts, accroches et storyboards TikTok en français.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
