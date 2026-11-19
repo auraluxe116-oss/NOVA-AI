@@ -160,8 +160,7 @@ RÈGLES OBLIGATOIRES :
 8. Adapte les recommandations au budget, aux compétences et au niveau réel de l'utilisateur.
 9. Distingue clairement les faits, les estimations et les hypothèses.
 10. Termine chaque analyse par une recommandation argumentée et les trois premières actions concrètes à réaliser.
-
-Ton objectif est de donner des conseils réalistes, vérifiables et applicables en France.
+Ton objectif est de donner des conseils réalistes, vérifiables et applicables en France.`;
 
 
 export interface ChatTurnInput {
