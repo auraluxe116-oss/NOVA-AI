@@ -571,7 +571,8 @@ ${
 - N'annonce jamais un gain de temps, une économie ou un résultat commercial comme un fait sans mesure vérifiable.
 - Dans les modèles de prospection, n'invente jamais de client, de témoignage, de résultat ou de référence commerciale.
 - Distingue toujours un exemple fictif d'une expérience réellement réalisée.
-- Avant de recommander une automatisation, explique les limites, les risques d'erreur et la nécessité d'une validation humaine lorsque cela est pertinent.';
+- Avant de recommander une automatisation, explique les limites, les risques d'erreur et la nécessité d'une validation humaine lorsque cela est pertinent.
+`;
 
 
   
