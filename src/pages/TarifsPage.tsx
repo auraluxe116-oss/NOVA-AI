@@ -324,6 +324,30 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         </div>
       )}
 
+      {user?.subscriptionStatus === 'past_due' && (
+        <div className="mx-auto mt-8 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/45 bg-amber-500/10 p-4 text-xs leading-relaxed text-amber-100">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <div>
+              <p className="font-semibold text-white">
+                Paiement en retard : régularisation requise
+              </p>
+              <p className="mt-0.5 text-amber-100/90">
+                Vos avantages payants sont temporairement suspendus suite à un échec de paiement.
+                Mettez à jour votre moyen de paiement via le Portail client Stripe dans votre Profil.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('profil')}
+            className="rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-[#08080B] hover:bg-amber-400 transition-colors"
+          >
+            Gérer dans Profil
+          </button>
+        </div>
+      )}
+
       {checkoutUrlFallback && (
         <div className="mx-auto mt-6 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[#7C3AED] bg-[#17132A] p-4 text-xs text-white">
           <span>Votre session sécurisée Stripe est prête.</span>
@@ -340,9 +364,21 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
       )}
 
       {feedback && (
-        <div className="mx-auto mt-6 flex max-w-3xl items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-          <span>{feedback}</span>
+        <div className="mx-auto mt-6 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <span>{feedback}</span>
+          </div>
+          {(feedback.toLowerCase().includes('portail') ||
+            feedback.toLowerCase().includes('abonnement actif')) && (
+            <button
+              type="button"
+              onClick={() => onNavigate('profil')}
+              className="rounded-lg border border-amber-400/50 bg-[#171722] px-3 py-1.5 font-semibold text-white hover:border-[#7C3AED]"
+            >
+              Ouvrir mon Profil
+            </button>
+          )}
         </div>
       )}
 
@@ -566,19 +602,48 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         </div>
       </section>
 
-      <div className="mt-8 space-y-2 text-center text-xs text-[#8E8EA6]">
+      <div className="mt-8 space-y-3 text-center text-xs text-[#8E8EA6]">
         <p>
           * NOVA AI PRO n&apos;impose aucun compteur quotidien ou mensuel artificiel dans
           l&apos;application. Seules les limites de débit techniques du fournisseur d&apos;IA
           externe (ex. quota Google HTTP 429) et les protections anti-abus restent actives.
         </p>
         <div className="flex items-center justify-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />
+          <ShieldCheck className="h-4 w-4 shrink-0 text-[#8B5CF6]" />
           <span>
             Aucun abonnement n&apos;est activé sans confirmation serveur et webhook Stripe.
-            Résiliation possible à tout moment depuis votre Profil.
+            Renouvellement automatique sans engagement, résiliable en 1 clic avant échéance depuis
+            votre Profil.
           </span>
         </div>
+        <p className="text-[11px] text-[#7D7D96]">
+          Facturation sécurisée par Stripe · Factures PDF téléchargeables dans votre Profil ·
+          TVA et conditions précontractuelles précisées dans nos{' '}
+          <button
+            type="button"
+            onClick={() => onNavigate('cgv')}
+            className="text-[#C4B5FD] underline hover:text-white"
+          >
+            CGV &amp; Remboursement
+          </button>
+          ,{' '}
+          <button
+            type="button"
+            onClick={() => onNavigate('confidentialite')}
+            className="text-[#C4B5FD] underline hover:text-white"
+          >
+            Politique RGPD
+          </button>{' '}
+          et{' '}
+          <button
+            type="button"
+            onClick={() => onNavigate('mentions-legales')}
+            className="text-[#C4B5FD] underline hover:text-white"
+          >
+            Mentions légales
+          </button>
+          .
+        </p>
       </div>
     </main>
   );

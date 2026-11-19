@@ -3,12 +3,19 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createApp } from './server/app.js';
+import { closeDatabase, ensureDatabaseReady, sanitizeDbErrorMessage } from './server/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 
 async function startServer() {
+  try {
+    await ensureDatabaseReady();
+  } catch (err) {
+    console.warn('[NOVA AI PRO] PostgreSQL non initialisé au démarrage :', sanitizeDbErrorMessage(err));
+  }
+
   const app = createApp();
 
   // Frontend Dev / Prod Static Serving (local & standalone Node hosting)
@@ -27,9 +34,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`NOVA AI server listening on http://localhost:${PORT}`);
   });
+
+  const shutdown = async () => {
+    httpServer.close(async () => {
+      await closeDatabase().catch(() => {});
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 }
 
 startServer().catch((err) => {

@@ -1,16 +1,10 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
 import { after, before, beforeEach, test } from 'node:test';
 import { GoogleGenAI } from '@google/genai';
 
-const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nova-gemini-err-test-'));
-const tempDbPath = path.join(tempDir, 'test.db');
-process.env.SQLITE_DB_PATH = tempDbPath;
-
 const { createApp } = await import('./app.js');
+const { closeDatabase, createMemoryPgAdapter, setDatabaseAdapterForTests } = await import('./db.js');
 const {
   GEMINI_MODELS,
   classifyGeminiError,
@@ -58,6 +52,7 @@ let nextChatError: Error | null = null;
 let nextCompanyError: Error | null = null;
 
 before(async () => {
+  setDatabaseAdapterForTests(createMemoryPgAdapter());
   const app = createApp({
     providerKeyChecker: () => 'test-key-present',
     summarizeHistory: async () => null,
@@ -89,7 +84,8 @@ after(async () => {
   await new Promise<void>((resolve) => {
     server?.close(() => resolve());
   });
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  await closeDatabase();
+  setDatabaseAdapterForTests(null);
 });
 
 beforeEach(() => {

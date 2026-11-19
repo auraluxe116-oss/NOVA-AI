@@ -436,6 +436,16 @@ export async function createCheckoutSessionForUser(params: {
     );
   }
 
+  if (
+    params.user.effectivePlan !== 'free' &&
+    params.user.subscriptionStatus === 'active' &&
+    params.user.stripeSubscriptionId
+  ) {
+    throw new Error(
+      'ABONNEMENT_DEJA_ACTIF: Vous disposez déjà d’un abonnement actif. Ouvrez le portail client Stripe depuis votre Profil pour changer de formule ou gérer votre facturation sans double prélèvement.'
+    );
+  }
+
   let singlePriceHint: StripeRecurringInterval = null;
   const explicitPriceId = getExplicitIntervalPriceId(params.plan, params.interval);
   const singlePriceId = !explicitPriceId ? getSinglePlanPriceId(params.plan) : null;
@@ -553,15 +563,37 @@ export async function verifyCheckoutSessionForUser(params: {
     throw new Error('SESSION_INVALIDE: Cette session de paiement ne correspond pas à votre compte.');
   }
 
-  const rawPlan = session.metadata?.plan;
-  const plan: PlanTier =
-    rawPlan === 'business' ? 'business' : rawPlan === 'pro' ? 'pro' : 'free';
+  const subObj =
+    typeof session.subscription === 'object' && session.subscription
+      ? (session.subscription as Stripe.Subscription)
+      : null;
+  const subPriceId = subObj?.items?.data?.[0]?.price?.id;
+  const subAmount = subObj?.items?.data?.[0]?.price?.unit_amount ?? 0;
+  const subRawInterval = subObj?.items?.data?.[0]?.price?.recurring?.interval;
+
   const interval: BillingInterval =
-    session.metadata?.interval === 'annual' ? 'annual' : 'monthly';
-  const isPaid = session.payment_status === 'paid';
+    subRawInterval === 'year'
+      ? 'annual'
+      : subRawInterval === 'month'
+      ? 'monthly'
+      : session.metadata?.interval === 'annual'
+      ? 'annual'
+      : 'monthly';
+
+  const rawPlan = session.metadata?.plan;
+  const metaPlan: PlanTier =
+    rawPlan === 'business' ? 'business' : rawPlan === 'pro' ? 'pro' : 'free';
+  const plan: PlanTier =
+    inferPlanFromPriceId(subPriceId) ??
+    inferPlanFromConfiguredAmount(subAmount, interval) ??
+    metaPlan;
+
+  const subNotRevoked =
+    !subObj?.status || (subObj.status !== 'canceled' && subObj.status !== 'incomplete_expired');
+  const isPaid = session.payment_status === 'paid' && subNotRevoked;
 
   if (!isPaid || plan === 'free') {
-    const freshUser = findUserById(params.user.id);
+    const freshUser = await findUserById(params.user.id);
     return {
       verified: false,
       paymentStatus: session.payment_status || 'unpaid',
@@ -576,10 +608,6 @@ export async function verifyCheckoutSessionForUser(params: {
       ? session.customer
       : session.customer?.id ?? null;
 
-  const subObj =
-    typeof session.subscription === 'object' && session.subscription
-      ? (session.subscription as Stripe.Subscription)
-      : null;
   const subscriptionId =
     typeof session.subscription === 'string'
       ? session.subscription
@@ -600,7 +628,7 @@ export async function verifyCheckoutSessionForUser(params: {
       ? new Date(subRaw.current_period_end * 1000).toISOString()
       : null;
 
-  const updated = updateUserSubscription(params.user.id, {
+  const updated = await updateUserSubscription(params.user.id, {
     plan,
     billingInterval: interval,
     subscriptionStatus: 'active',
@@ -610,7 +638,7 @@ export async function verifyCheckoutSessionForUser(params: {
     currentPeriodEnd: periodEndIso,
   });
 
-  upsertSubscriptionRecord({
+  await upsertSubscriptionRecord({
     userId: params.user.id,
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
@@ -702,7 +730,7 @@ export async function setSubscriptionCancellation(params: {
   if (!stripe) {
     throw new Error('STRIPE_NON_CONFIGURE: Clé Stripe manquante côté serveur.');
   }
-  const userRecord = findUserById(params.userId);
+  const userRecord = await findUserById(params.userId);
   if (!userRecord || !userRecord.stripe_subscription_id) {
     throw new Error('AUCUN_ABONNEMENT_ACTIF: Aucun abonnement Stripe actif à modifier.');
   }
@@ -720,14 +748,14 @@ export async function setSubscriptionCancellation(params: {
       ? new Date(subRaw.current_period_end * 1000).toISOString()
       : userRecord.current_period_end;
 
-  const updatedUser = updateUserSubscription(userRecord.id, {
+  const updatedUser = await updateUserSubscription(userRecord.id, {
     plan: userRecord.plan,
     subscriptionStatus: mapStripeStatus(updatedSub.status),
     cancelAtPeriodEnd: Boolean(updatedSub.cancel_at_period_end),
     currentPeriodEnd: periodEndIso,
   });
 
-  upsertSubscriptionRecord({
+  await upsertSubscriptionRecord({
     userId: userRecord.id,
     stripeCustomerId: userRecord.stripe_customer_id,
     stripeSubscriptionId: updatedSub.id,
@@ -796,7 +824,17 @@ export async function processStripeWebhook(
     new Stripe(cleanEnv('STRIPE_SECRET_KEY') || 'sk_webhook_verify_only');
   const event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
 
-  if (isStripeEventProcessed(event.id)) {
+  const configuredMode = getStripeMode();
+  if (typeof event.livemode === 'boolean' && configuredMode !== 'unconfigured') {
+    if (configuredMode === 'test' && event.livemode) {
+      throw new Error('WEBHOOK_MODE_INCOHERENT: Événement Stripe LIVE refusé en mode TEST.');
+    }
+    if (configuredMode === 'live' && !event.livemode) {
+      throw new Error('WEBHOOK_MODE_INCOHERENT: Événement Stripe TEST refusé en mode LIVE.');
+    }
+  }
+
+  if (await isStripeEventProcessed(event.id)) {
     return { received: true, eventType: event.type, duplicate: true };
   }
 
@@ -820,9 +858,9 @@ export async function processStripeWebhook(
           : session.subscription?.id ?? null;
 
       const user = userId
-        ? findUserById(userId)
+        ? await findUserById(userId)
         : customerId
-        ? findUserByStripeCustomerId(customerId)
+        ? await findUserByStripeCustomerId(customerId)
         : null;
 
       if (user && plan !== 'free') {
@@ -852,7 +890,7 @@ export async function processStripeWebhook(
             }
           }
 
-          updateUserSubscription(user.id, {
+          await updateUserSubscription(user.id, {
             plan,
             billingInterval: interval,
             subscriptionStatus: 'active',
@@ -861,7 +899,7 @@ export async function processStripeWebhook(
             stripeSubscriptionId: subscriptionId,
             currentPeriodEnd: periodEndIso,
           });
-          upsertSubscriptionRecord({
+          await upsertSubscriptionRecord({
             userId: user.id,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
@@ -880,7 +918,7 @@ export async function processStripeWebhook(
           });
         } else {
           // Payment pending / unpaid: never grant paid access before real payment confirmation
-          upsertSubscriptionRecord({
+          await upsertSubscriptionRecord({
             userId: user.id,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
@@ -905,13 +943,13 @@ export async function processStripeWebhook(
           ? session.customer
           : session.customer?.id ?? null;
       const user = userId
-        ? findUserById(userId)
+        ? await findUserById(userId)
         : customerId
-        ? findUserByStripeCustomerId(customerId)
+        ? await findUserByStripeCustomerId(customerId)
         : null;
 
       if (user && user.subscription_status !== 'active') {
-        updateUserSubscription(user.id, {
+        await updateUserSubscription(user.id, {
           plan: 'free',
           subscriptionStatus: 'canceled',
           cancelAtPeriodEnd: false,
@@ -920,6 +958,7 @@ export async function processStripeWebhook(
       break;
     }
 
+    case 'customer.subscription.created':
     case 'customer.subscription.updated':
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription;
@@ -927,9 +966,9 @@ export async function processStripeWebhook(
         typeof sub.customer === 'string' ? sub.customer : sub.customer?.id ?? null;
       const userId = sub.metadata?.userId;
       const user = userId
-        ? findUserById(userId)
-        : findUserByStripeSubscriptionId(sub.id) ??
-          (customerId ? findUserByStripeCustomerId(customerId) : null);
+        ? await findUserById(userId)
+        : (await findUserByStripeSubscriptionId(sub.id)) ??
+          (customerId ? await findUserByStripeCustomerId(customerId) : null);
 
       if (user) {
         const mappedStatus =
@@ -981,7 +1020,7 @@ export async function processStripeWebhook(
             ? new Date().toISOString()
             : null;
 
-        updateUserSubscription(user.id, {
+        await updateUserSubscription(user.id, {
           plan: inferredPlan,
           billingInterval: resolvedInterval,
           subscriptionStatus: mappedStatus,
@@ -991,7 +1030,7 @@ export async function processStripeWebhook(
           currentPeriodEnd: periodEndIso,
         });
 
-        upsertSubscriptionRecord({
+        await upsertSubscriptionRecord({
           userId: user.id,
           stripeCustomerId: customerId ?? user.stripe_customer_id,
           stripeSubscriptionId: sub.id,
@@ -1020,8 +1059,8 @@ export async function processStripeWebhook(
         typeof invSub === 'string' ? invSub : invSub?.id ?? null;
 
       const user =
-        (subscriptionId ? findUserByStripeSubscriptionId(subscriptionId) : null) ??
-        (customerId ? findUserByStripeCustomerId(customerId) : null);
+        (subscriptionId ? await findUserByStripeSubscriptionId(subscriptionId) : null) ??
+        (customerId ? await findUserByStripeCustomerId(customerId) : null);
 
       if (user && user.plan !== 'free') {
         const linePeriodEnd = invoice.lines?.data?.[0]?.period?.end;
@@ -1030,13 +1069,13 @@ export async function processStripeWebhook(
             ? new Date(linePeriodEnd * 1000).toISOString()
             : user.current_period_end;
 
-        updateUserSubscription(user.id, {
+        await updateUserSubscription(user.id, {
           plan: user.plan,
           subscriptionStatus: 'active',
           currentPeriodEnd: periodEndIso,
         });
         if (subscriptionId) {
-          upsertSubscriptionRecord({
+          await upsertSubscriptionRecord({
             userId: user.id,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
@@ -1064,16 +1103,16 @@ export async function processStripeWebhook(
         typeof invSub === 'string' ? invSub : invSub?.id ?? null;
 
       const user =
-        (subscriptionId ? findUserByStripeSubscriptionId(subscriptionId) : null) ??
-        (customerId ? findUserByStripeCustomerId(customerId) : null);
+        (subscriptionId ? await findUserByStripeSubscriptionId(subscriptionId) : null) ??
+        (customerId ? await findUserByStripeCustomerId(customerId) : null);
 
       if (user) {
-        updateUserSubscription(user.id, {
+        await updateUserSubscription(user.id, {
           plan: user.plan,
           subscriptionStatus: 'past_due',
         });
         if (subscriptionId) {
-          upsertSubscriptionRecord({
+          await upsertSubscriptionRecord({
             userId: user.id,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
@@ -1087,10 +1126,115 @@ export async function processStripeWebhook(
       break;
     }
 
+    case 'charge.refunded': {
+      const charge = event.data.object as Stripe.Charge;
+      const customerId =
+        typeof charge.customer === 'string'
+          ? charge.customer
+          : charge.customer?.id ?? null;
+      const user = customerId ? await findUserByStripeCustomerId(customerId) : null;
+      const isFullRefund =
+        Boolean(charge.refunded) ||
+        (typeof charge.amount === 'number' &&
+          charge.amount > 0 &&
+          typeof charge.amount_refunded === 'number' &&
+          charge.amount_refunded >= charge.amount);
+
+      if (user && isFullRefund) {
+        const nowIso = new Date().toISOString();
+        await updateUserSubscription(user.id, {
+          plan: 'free',
+          subscriptionStatus: 'canceled',
+          cancelAtPeriodEnd: false,
+        });
+        if (user.stripe_subscription_id) {
+          await upsertSubscriptionRecord({
+            userId: user.id,
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: user.stripe_subscription_id,
+            plan: 'free',
+            billingInterval: user.billing_interval,
+            amountCents: 0,
+            status: 'refunded',
+            cancelAtPeriodEnd: false,
+            canceledAt: nowIso,
+          });
+        }
+      }
+      break;
+    }
+
+    case 'charge.dispute.created': {
+      const dispute = event.data.object as Stripe.Dispute;
+      const chargeObj =
+        typeof dispute.charge === 'object' && dispute.charge
+          ? (dispute.charge as Stripe.Charge)
+          : null;
+      let customerId =
+        chargeObj && typeof chargeObj.customer === 'string'
+          ? chargeObj.customer
+          : chargeObj && typeof chargeObj.customer === 'object'
+          ? chargeObj.customer?.id ?? null
+          : null;
+      if (!customerId && typeof (dispute as unknown as { payment_intent?: string }).payment_intent === 'string') {
+        customerId = null;
+      }
+      const disputeMetadataUserId = dispute.metadata?.userId;
+      const user = disputeMetadataUserId
+        ? await findUserById(disputeMetadataUserId)
+        : customerId
+        ? await findUserByStripeCustomerId(customerId)
+        : null;
+
+      if (user) {
+        await updateUserSubscription(user.id, {
+          plan: user.plan,
+          subscriptionStatus: 'past_due',
+        });
+      }
+      break;
+    }
+
+    case 'charge.dispute.closed': {
+      const dispute = event.data.object as Stripe.Dispute;
+      const chargeObj =
+        typeof dispute.charge === 'object' && dispute.charge
+          ? (dispute.charge as Stripe.Charge)
+          : null;
+      const customerId =
+        chargeObj && typeof chargeObj.customer === 'string'
+          ? chargeObj.customer
+          : chargeObj && typeof chargeObj.customer === 'object'
+          ? chargeObj.customer?.id ?? null
+          : null;
+      const disputeMetadataUserId = dispute.metadata?.userId;
+      const user = disputeMetadataUserId
+        ? await findUserById(disputeMetadataUserId)
+        : customerId
+        ? await findUserByStripeCustomerId(customerId)
+        : null;
+
+      if (user) {
+        if (dispute.status === 'lost') {
+          await updateUserSubscription(user.id, {
+            plan: 'free',
+            subscriptionStatus: 'canceled',
+            cancelAtPeriodEnd: false,
+          });
+        } else if (dispute.status === 'won' && user.plan !== 'free') {
+          await updateUserSubscription(user.id, {
+            plan: user.plan,
+            subscriptionStatus: 'active',
+          });
+        }
+      }
+      break;
+    }
+
     default:
       break;
   }
 
-  markStripeEventProcessed(event.id, event.type);
+  await markStripeEventProcessed(event.id, event.type);
   return { received: true, eventType: event.type };
 }

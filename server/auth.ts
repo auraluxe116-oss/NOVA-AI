@@ -1,12 +1,20 @@
 import crypto from 'crypto';
 import type express from 'express';
+import os from 'os';
 import fs from 'fs';
 import path from 'path';
-import { DATA_DIR, findUserById, toPublicUser } from './db.js';
+import { findUserById, toPublicUser } from './db.js';
 import type { PublicUser, UserRecord } from './types.js';
 
 const SESSION_COOKIE_NAME = 'nova_session';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 jours
+
+export function isExplicitSessionSecretConfigured(): boolean {
+  const envSecret = process.env.SESSION_SECRET?.trim();
+  return Boolean(
+    envSecret && envSecret !== 'REPLACE_WITH_LONG_RANDOM_SECRET' && envSecret.length >= 16
+  );
+}
 
 function getSessionSecret(): Buffer {
   const envSecret = process.env.SESSION_SECRET?.trim();
@@ -14,7 +22,18 @@ function getSessionSecret(): Buffer {
     return crypto.createHash('sha256').update(envSecret).digest();
   }
 
-  const keyFile = path.join(DATA_DIR, '.session_key');
+  if (process.env.VERCEL === '1' || process.env.NODE_ENV === 'production') {
+    const prodSeed = [
+      process.env.DATABASE_URL || '',
+      process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || '',
+      process.env.GEMINI_API_KEY || '',
+    ].join(':');
+    if (prodSeed.replace(/:/g, '').length > 0) {
+      return crypto.createHash('sha256').update(`nova-session-prod:${prodSeed}`).digest();
+    }
+  }
+
+  const keyFile = path.join(os.tmpdir(), 'nova-dev-session.key');
   try {
     if (fs.existsSync(keyFile)) {
       const existing = fs.readFileSync(keyFile, 'utf8').trim();
@@ -22,25 +41,14 @@ function getSessionSecret(): Buffer {
         return Buffer.from(existing, 'hex');
       }
     }
-    const seedMaterial =
-      process.env.VERCEL === '1'
-        ? crypto
-            .createHash('sha256')
-            .update(
-              `nova-vercel:${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'default'}:${process.env.GEMINI_API_KEY || 'local'}`
-            )
-            .digest('hex')
-        : crypto.randomBytes(32).toString('hex');
-
-    fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+    const seedMaterial = crypto.randomBytes(32).toString('hex');
     fs.writeFileSync(keyFile, seedMaterial, { mode: 0o600 });
     return Buffer.from(seedMaterial, 'hex');
   } catch {
-    const fallbackMaterial =
-      process.env.GEMINI_API_KEY ||
-      process.env.VERCEL_URL ||
-      crypto.randomBytes(32).toString('hex');
-    return crypto.createHash('sha256').update(`nova-session:${fallbackMaterial}`).digest();
+    return crypto
+      .createHash('sha256')
+      .update(`nova-session:${process.env.DATABASE_URL || crypto.randomBytes(32).toString('hex')}`)
+      .digest();
   }
 }
 
@@ -188,13 +196,15 @@ export function hashIp(ip: string): string {
     .slice(0, 24);
 }
 
-export function getAuthenticatedUserRecord(req: express.Request): UserRecord | null {
+export async function getAuthenticatedUserRecord(
+  req: express.Request
+): Promise<UserRecord | null> {
   const cookies = parseCookies(req.headers.cookie);
   const token = cookies[SESSION_COOKIE_NAME];
   if (!token) return null;
   const payload = verifySessionToken(token);
   if (!payload) return null;
-  const record = findUserById(payload.uid);
+  const record = await findUserById(payload.uid);
   if (!record) return null;
   if ((record.token_version ?? 1) !== (payload.tv ?? 1)) {
     return null;
@@ -202,8 +212,10 @@ export function getAuthenticatedUserRecord(req: express.Request): UserRecord | n
   return record;
 }
 
-export function getAuthenticatedPublicUser(req: express.Request): PublicUser | null {
-  const record = getAuthenticatedUserRecord(req);
+export async function getAuthenticatedPublicUser(
+  req: express.Request
+): Promise<PublicUser | null> {
+  const record = await getAuthenticatedUserRecord(req);
   return record ? toPublicUser(record) : null;
 }
 

@@ -326,8 +326,16 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
               </>
             )}
           </div>
-          <p className="text-[11px] text-[#7D7D96]">
+          <p className="text-[11px] leading-relaxed text-[#7D7D96]">
             En utilisant NOVA AI PRO, vous acceptez nos{' '}
+            <button
+              type="button"
+              onClick={() => onNavigate('cgv')}
+              className="text-[#9E9EB5] underline hover:text-white"
+            >
+              CGV &amp; Remboursement
+            </button>
+            , nos{' '}
             <button
               type="button"
               onClick={() => onNavigate('confidentialite')}
@@ -335,7 +343,7 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
             >
               règles de confidentialité (RGPD)
             </button>{' '}
-            et{' '}
+            et nos{' '}
             <button
               type="button"
               onClick={() => onNavigate('mentions-legales')}

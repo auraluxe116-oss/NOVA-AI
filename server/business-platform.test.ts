@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
 import { after, before, test } from 'node:test';
-
-const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nova-biz-platform-test-'));
-const tempDbPath = path.join(tempDir, 'test.db');
-process.env.SQLITE_DB_PATH = tempDbPath;
 
 const { createApp } = await import('./app.js');
 const {
@@ -17,7 +10,13 @@ const {
   sanitizeSvgLogo,
   summarizeConversationHistory,
 } = await import('./gemini.js');
-const { addMessage, createConversation } = await import('./db.js');
+const {
+  addMessage,
+  closeDatabase,
+  createConversation,
+  createMemoryPgAdapter,
+  setDatabaseAdapterForTests,
+} = await import('./db.js');
 
 function parseSsePayloads(rawText: string): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [];
@@ -58,6 +57,7 @@ let nextBusinessError: Error | null = null;
 let summarizeInvocations = 0;
 
 before(async () => {
+  setDatabaseAdapterForTests(createMemoryPgAdapter());
   const app = createApp({
     providerKeyChecker: () => 'test-key-only',
     summarizeHistory: async ({ turnsToSummarize }) => {
@@ -150,7 +150,8 @@ after(async () => {
   await new Promise<void>((resolve) => {
     server?.close(() => resolve());
   });
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  await closeDatabase();
+  setDatabaseAdapterForTests(null);
 });
 
 test('buildAssistantSystemInstruction intègre les 11 domaines business, le plan 7 volets, l’honnêteté, le niveau et la vérité recherche web', () => {
@@ -317,7 +318,7 @@ test('conversation longue (> 16 messages) déclenche le résumé automatique san
   const regJson = (await reg.json()) as { user: { id: string } };
   const cookie = (reg.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
 
-  const conv = createConversation({
+  const conv = await createConversation({
     userId: regJson.user.id,
     title: 'Longue conversation stratégie',
     category: 'business',
@@ -325,8 +326,8 @@ test('conversation longue (> 16 messages) déclenche le résumé automatique san
 
   // Seed 16 alternating historical turns (8 Q/A pairs)
   for (let i = 1; i <= 8; i += 1) {
-    addMessage({ conversationId: conv.id, role: 'user', content: `Question étape ${i}` });
-    addMessage({ conversationId: conv.id, role: 'assistant', content: `Réponse étape ${i}` });
+    await addMessage({ conversationId: conv.id, role: 'user', content: `Question étape ${i}` });
+    await addMessage({ conversationId: conv.id, role: 'assistant', content: `Réponse étape ${i}` });
   }
 
   const res = await fetch(`${baseUrl}/api/chat`, {

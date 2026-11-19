@@ -27,6 +27,7 @@ const VALID_VIEWS: PageView[] = [
   'paiement-echec',
   'confidentialite',
   'mentions-legales',
+  'cgv',
 ];
 
 function getInitialViewFromUrl(): {
@@ -213,7 +214,9 @@ export function App() {
               }}
             />
           )}
-          {(activeView === 'confidentialite' || activeView === 'mentions-legales') && (
+          {(activeView === 'confidentialite' ||
+            activeView === 'mentions-legales' ||
+            activeView === 'cgv') && (
             <LegalPages
               mode={activeView}
               user={user}
@@ -259,6 +262,13 @@ export function App() {
                 className="hover:text-white"
               >
                 {user ? 'Tableau de bord' : 'Connexion'}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('cgv')}
+                className="hover:text-white"
+              >
+                CGV &amp; Remboursement
               </button>
               <button
                 type="button"

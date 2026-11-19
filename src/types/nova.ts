@@ -11,7 +11,8 @@ export type PageView =
   | 'paiement-succes'
   | 'paiement-echec'
   | 'confidentialite'
-  | 'mentions-legales';
+  | 'mentions-legales'
+  | 'cgv';
 
 export type PlanTier = 'free' | 'pro' | 'business';
 export type BillingInterval = 'monthly' | 'annual';

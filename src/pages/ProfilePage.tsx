@@ -7,6 +7,7 @@ import {
   FileText,
   KeyRound,
   LogOut,
+  RefreshCw,
   RotateCcw,
   Save,
   Shield,
@@ -32,6 +33,7 @@ import {
   deleteAccountApi,
   exportUserDataApi,
   fetchAIProviders,
+  fetchAuthMe,
   fetchStripeInvoices,
   fetchUserSubscriptions,
   logoutUser,
@@ -90,6 +92,7 @@ export function ProfilePage({
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [subActionLoading, setSubActionLoading] = useState(false);
   const [subFeedback, setSubFeedback] = useState<string | null>(null);
+  const [refreshingBilling, setRefreshingBilling] = useState(false);
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [invoices, setInvoices] = useState<StripeInvoiceSummary[]>([]);
 
@@ -290,6 +293,32 @@ export function ProfilePage({
       );
     } finally {
       setSubActionLoading(false);
+    }
+  };
+
+  const handleRefreshBilling = async () => {
+    setRefreshingBilling(true);
+    setSubFeedback(null);
+    try {
+      const [meRes, subRes, invRes] = await Promise.all([
+        fetchAuthMe(),
+        fetchUserSubscriptions().catch(() => ({ subscriptions })),
+        fetchStripeInvoices().catch(() => ({ invoices })),
+      ]);
+      if (meRes.user) {
+        onUserUpdated(meRes.user, meRes.quota);
+      }
+      setSubscriptions(subRes.subscriptions);
+      setInvoices(invRes.invoices);
+      setSubFeedback('Statut d’abonnement et factures Stripe actualisés.');
+    } catch (err) {
+      setSubFeedback(
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Impossible d’actualiser les informations Stripe.'
+      );
+    } finally {
+      setRefreshingBilling(false);
     }
   };
 
@@ -511,7 +540,14 @@ export function ProfilePage({
                   <Download className="h-3.5 w-3.5 text-[#3B82F6]" />
                   {exportingData ? 'Préparation JSON...' : 'Exporter mes données (RGPD JSON)'}
                 </button>
-                <div className="flex items-center gap-3 text-[11px] text-[#9E9EB5]">
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#9E9EB5]">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('cgv')}
+                    className="hover:text-white underline"
+                  >
+                    CGV &amp; Remboursement
+                  </button>
                   <button
                     type="button"
                     onClick={() => onNavigate('confidentialite')}
@@ -578,21 +614,40 @@ export function ProfilePage({
 
         <div className="space-y-4 lg:col-span-6">
           <div className="rounded-xl border border-[#232332] bg-[#111117] p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <CreditCard className="h-4 w-4 text-[#A78BFA]" />
-              <h2 className="font-display text-lg font-semibold text-white">
-                Abonnement &amp; Gestion Stripe
-              </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-[#A78BFA]" />
+                <h2 className="font-display text-lg font-semibold text-white">
+                  Abonnement &amp; Gestion Stripe
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={refreshingBilling}
+                onClick={() => void handleRefreshBilling()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#2C2C40] bg-[#171722] px-2.5 py-1 text-xs font-medium text-[#D6D6EA] hover:border-[#7C3AED] hover:text-white disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${refreshingBilling ? 'animate-spin' : ''}`} />
+                {refreshingBilling ? 'Sync...' : 'Actualiser'}
+              </button>
             </div>
 
             <div className="space-y-2.5 text-sm">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[#9E9EB5]">Formule active</span>
                 <span className="font-display font-bold uppercase text-white">
                   {user.effectivePlan === 'free' ? 'GRATUIT' : user.effectivePlan.toUpperCase()}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
+              {user.effectivePlan !== 'free' && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[#9E9EB5]">Cycle de facturation</span>
+                  <span className="font-mono text-xs text-[#E4E4F0]">
+                    {user.billingInterval === 'annual' ? 'Annuel' : 'Mensuel'}
+                  </span>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[#9E9EB5]">Statut Stripe</span>
                 <span className="font-mono text-xs text-[#C4B5FD]">
                   {user.subscriptionStatus === 'active'
@@ -749,7 +804,7 @@ export function ProfilePage({
               </div>
               <div className="divide-y divide-[#1E1E2B] text-xs">
                 {invoices.map((inv) => (
-                  <div key={inv.id} className="flex items-center justify-between gap-3 py-2.5">
+                  <div key={inv.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
                     <div>
                       <p className="font-mono font-medium text-white">
                         {inv.number || inv.id.slice(0, 14)}
@@ -794,7 +849,7 @@ export function ProfilePage({
               </h3>
               <div className="divide-y divide-[#1E1E2B] text-xs">
                 {subscriptions.map((sub) => (
-                  <div key={sub.id} className="flex items-center justify-between gap-2 py-2.5">
+                  <div key={sub.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
                     <div>
                       <p className="font-semibold uppercase text-white">
                         {sub.plan} ({sub.billing_interval === 'annual' ? 'Annuel' : 'Mensuel'})
@@ -813,6 +868,17 @@ export function ProfilePage({
                   </div>
                 ))}
               </div>
+              <p className="text-[11px] text-[#8D8DA4]">
+                TVA, renouvellement automatique et conditions de remboursement détaillés dans nos{' '}
+                <button
+                  type="button"
+                  onClick={() => onNavigate('cgv')}
+                  className="text-[#C4B5FD] underline hover:text-white"
+                >
+                  CGV &amp; Remboursement
+                </button>
+                .
+              </p>
             </div>
           )}
         </div>
