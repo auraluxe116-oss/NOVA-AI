@@ -2,9 +2,11 @@ import {
   AlertCircle,
   Check,
   Copy,
+  Cpu,
   Edit3,
   Globe,
   History,
+  Layers,
   Loader2,
   MessageSquarePlus,
   Paperclip,
@@ -18,6 +20,8 @@ import {
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import type {
+  AIProviderId,
+  AIProviderInfo,
   ChatMessage,
   ConversationSummary,
   PageView,
@@ -27,6 +31,7 @@ import type {
 import {
   ApiError,
   deleteConversationApi,
+  fetchAIProviders,
   fetchConversationDetail,
   fetchConversations,
   renameConversationApi,
@@ -85,7 +90,15 @@ export function AssistantPage({
   const [activeConvId, setActiveConvId] = useState<string | null>(initialConversationId ?? null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [useWebSearch, setUseWebSearch] = useState(false);
+  const [useWebSearch, setUseWebSearch] = useState(Boolean(user?.preferences?.autoWebSearch));
+  const [providers, setProviders] = useState<AIProviderInfo[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<AIProviderId>(
+    user?.preferences?.preferredProvider || 'gemini'
+  );
+  const [selectedModel, setSelectedModel] = useState<string>(
+    user?.preferences?.preferredModel || 'gemini-4-hydrogen'
+  );
+  const [summarizedActive, setSummarizedActive] = useState(false);
   const [attachment, setAttachment] = useState<AttachmentPayload | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -101,10 +114,30 @@ export function AssistantPage({
   const [renamingTitle, setRenamingTitle] = useState('');
 
   const abortRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
+  const activeRequestSeqRef = useRef(0);
+  const convLoadSeqRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const consumedInitialPromptRef = useRef<string | null>(null);
+
+  const cancelActiveStream = () => {
+    activeRequestSeqRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    inFlightRef.current = false;
+    setIsGenerating(false);
+    setStatusLabel(null);
+  };
+
+  useEffect(() => {
+    return () => {
+      activeRequestSeqRef.current += 1;
+      convLoadSeqRef.current += 1;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const loadConversationsList = async () => {
     if (!user) {
@@ -118,6 +151,27 @@ export function AssistantPage({
       // ignore non-blocking list failure
     }
   };
+
+  useEffect(() => {
+    void fetchAIProviders()
+      .then((res) => {
+        setProviders(res.providers);
+        const prefProvider = user?.preferences?.preferredProvider || 'gemini';
+        const match =
+          res.providers.find((p) => p.id === prefProvider && p.configured) ||
+          res.providers.find((p) => p.configured) ||
+          res.providers[0];
+        if (match) {
+          setSelectedProvider(match.id);
+          const prefModel = user?.preferences?.preferredModel;
+          const hasPrefModel = prefModel && match.models.some((m) => m.id === prefModel);
+          setSelectedModel(hasPrefModel ? prefModel : match.defaultModel);
+        }
+      })
+      .catch(() => {
+        // Fallback to Gemini default if fetch fails
+      });
+  }, [user?.id, user?.preferences?.preferredProvider, user?.preferences?.preferredModel]);
 
   useEffect(() => {
     void loadConversationsList();
@@ -141,29 +195,37 @@ export function AssistantPage({
   }, [input]);
 
   const openConversation = async (id: string) => {
+    cancelActiveStream();
+    const loadSeq = ++convLoadSeqRef.current;
     setLoadingConv(true);
     setErrorBanner(null);
+    setLastFailedRequest(null);
     setMobileHistoryOpen(false);
     try {
       const detail = await fetchConversationDetail(id);
+      if (loadSeq !== convLoadSeqRef.current) return;
       setActiveConvId(id);
       setMessages(detail.messages);
+      setSummarizedActive(Boolean(detail.conversation.context_summary));
     } catch (err) {
+      if (loadSeq !== convLoadSeqRef.current) return;
       setErrorBanner(err instanceof Error ? err.message : 'Impossible de charger la conversation.');
     } finally {
-      setLoadingConv(false);
+      if (loadSeq === convLoadSeqRef.current) {
+        setLoadingConv(false);
+      }
     }
   };
 
   const handleNewChat = () => {
-    if (isGenerating) {
-      abortRef.current?.abort();
-    }
+    cancelActiveStream();
+    convLoadSeqRef.current += 1;
+    setLoadingConv(false);
     setActiveConvId(null);
     setMessages([]);
+    setSummarizedActive(false);
     setErrorBanner(null);
     setLastFailedRequest(null);
-    setStatusLabel(null);
     setMobileHistoryOpen(false);
   };
 
@@ -229,8 +291,11 @@ export function AssistantPage({
     options?: { isRetry?: boolean; overrideAttachment?: AttachmentPayload | null }
   ) => {
     const cleanPrompt = promptText.trim();
-    if (!cleanPrompt || isGenerating) return;
+    if (!cleanPrompt || isGenerating || inFlightRef.current) return;
 
+    inFlightRef.current = true;
+    const requestSeq = ++activeRequestSeqRef.current;
+    const targetConvId = activeConvId;
     const isRetry = Boolean(options?.isRetry);
     const currentAttachment =
       options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
@@ -240,22 +305,45 @@ export function AssistantPage({
     setIsGenerating(true);
     setStatusLabel('NOVA réfléchit...');
 
-    const userMsgId = `u-${Date.now()}`;
-    const assistantMsgId = `a-${Date.now() + 1}`;
+    const userMsgId = `u-${requestSeq}-${Date.now()}`;
+    const assistantMsgId = `a-${requestSeq}-${Date.now()}`;
     if (!isRetry) {
       setInput('');
       setAttachment(null);
     }
 
     const guestHistory = !user
-      ? messages
-          .filter((m) => !m.isError && !m.isStreaming)
-          .slice(-12)
-          .map((m) => ({ role: m.role, content: m.content }))
+      ? (() => {
+          let validTurns = messages
+            .filter((m) => !m.isError && !m.isStreaming && m.content.trim().length > 0)
+            .map((m) => ({ role: m.role, content: m.content }));
+          if (isRetry) {
+            if (validTurns[validTurns.length - 1]?.role === 'assistant') {
+              validTurns = validTurns.slice(0, -1);
+            }
+            if (
+              validTurns[validTurns.length - 1]?.role === 'user' &&
+              validTurns[validTurns.length - 1]?.content.trim() === cleanPrompt
+            ) {
+              validTurns = validTurns.slice(0, -1);
+            }
+          } else {
+            while (
+              validTurns.length > 0 &&
+              validTurns[validTurns.length - 1]?.role === 'user'
+            ) {
+              validTurns = validTurns.slice(0, -1);
+            }
+          }
+          return validTurns.slice(-18);
+        })()
       : [];
 
     setMessages((prev) => {
-      const base = isRetry ? prev.filter((m) => !m.isError) : prev;
+      let base = isRetry ? prev.filter((m) => !m.isError) : prev;
+      if (isRetry && base.length > 0 && base[base.length - 1]?.role === 'assistant') {
+        base = base.slice(0, -1);
+      }
       const withUser = isRetry
         ? base
         : [
@@ -286,19 +374,23 @@ export function AssistantPage({
     try {
       await streamChatMessage({
         message: cleanPrompt,
-        conversationId: activeConvId,
+        conversationId: targetConvId,
         useWebSearch,
         isRetry,
+        provider: selectedProvider,
+        model: selectedModel,
         attachment: currentAttachment
           ? { name: currentAttachment.name, content: currentAttachment.content }
           : null,
         guestHistory,
         signal: controller.signal,
         onStatus: (label, convId) => {
+          if (requestSeq !== activeRequestSeqRef.current) return;
           setStatusLabel(label);
-          if (convId && !activeConvId) setActiveConvId(convId);
+          if (convId && !targetConvId) setActiveConvId(convId);
         },
         onDelta: (delta) => {
+          if (requestSeq !== activeRequestSeqRef.current) return;
           setStatusLabel(null);
           setMessages((prev) =>
             prev.map((m) =>
@@ -307,16 +399,21 @@ export function AssistantPage({
           );
         },
         onSources: (sources) => {
+          if (requestSeq !== activeRequestSeqRef.current) return;
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantMsgId ? { ...m, sources } : m))
           );
         },
         onDone: (payload) => {
-          if (payload.conversationId && !activeConvId) {
+          if (requestSeq !== activeRequestSeqRef.current) return;
+          if (payload.conversationId && !targetConvId) {
             setActiveConvId(payload.conversationId);
           }
           if (payload.quota) {
             onQuotaUpdated(payload.quota);
+          }
+          if (payload.summarizedActive) {
+            setSummarizedActive(true);
           }
           setMessages((prev) =>
             prev.map((m) =>
@@ -336,6 +433,7 @@ export function AssistantPage({
         },
       });
     } catch (err) {
+      if (requestSeq !== activeRequestSeqRef.current) return;
       if (err instanceof DOMException && err.name === 'AbortError') {
         setMessages((prev) =>
           prev.map((m) =>
@@ -369,14 +467,21 @@ export function AssistantPage({
         );
       }
     } finally {
-      setIsGenerating(false);
-      setStatusLabel(null);
-      abortRef.current = null;
+      if (requestSeq === activeRequestSeqRef.current) {
+        inFlightRef.current = false;
+        setIsGenerating(false);
+        setStatusLabel(null);
+        abortRef.current = null;
+      }
     }
   };
 
   useEffect(() => {
-    if (initialPrompt && consumedInitialPromptRef.current !== initialPrompt) {
+    if (!initialPrompt) {
+      consumedInitialPromptRef.current = null;
+      return;
+    }
+    if (consumedInitialPromptRef.current !== initialPrompt) {
       consumedInitialPromptRef.current = initialPrompt;
       onClearInitialPrompt();
       void sendMessage(initialPrompt);
@@ -521,38 +626,28 @@ export function AssistantPage({
         )}
       </div>
 
-      {/* Real Daily Quota Indicator */}
+      {/* Messagerie continue sans plafond artificiel */}
       {quota && (
-        <div className="border-t border-[#1F1F2D] p-3.5 text-xs">
+        <div className="border-t border-[#1F1F2D] p-3.5 text-xs space-y-1.5">
           <div className="flex items-center justify-between text-[#B2B2C6]">
             <span>Formule {quota.plan.toUpperCase()}</span>
             <span className="font-mono tabular-nums text-white">
-              {quota.chatRemaining}/{quota.chatLimit}
+              {quota.chatUsedToday} msg aujourd&apos;hui
             </span>
           </div>
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#1C1C28]">
-            <div
-              className="h-full bg-[#7C3AED] transition-all"
-              style={{
-                width: `${Math.min(
-                  100,
-                  Math.round((quota.chatUsed / Math.max(1, quota.chatLimit)) * 100)
-                )}%`,
-              }}
-            />
-          </div>
-          <div className="mt-1.5 flex items-center justify-between text-[11px] text-[#7D7D96]">
-            <span>Messages restants aujourd&apos;hui</span>
-            {quota.plan === 'free' && (
-              <button
-                type="button"
-                onClick={() => onNavigate('tarifs')}
-                className="font-medium text-[#A78BFA] hover:text-white"
-              >
-                Évoluer
-              </button>
-            )}
-          </div>
+          <p className="text-[11px] leading-snug text-[#8D8DA4]">
+            Aucun plafond interne de messages. Les limites externes éventuelles dépendent du
+            fournisseur IA.
+          </p>
+          {quota.plan === 'free' && (
+            <button
+              type="button"
+              onClick={() => onNavigate('tarifs')}
+              className="mt-1 font-medium text-[#A78BFA] hover:text-white"
+            >
+              Découvrir PRO &amp; BUSINESS
+            </button>
+          )}
         </div>
       )}
     </>
@@ -594,7 +689,7 @@ export function AssistantPage({
       {/* Main Chat Pane */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top Context Bar */}
-        <div className="flex items-center justify-between gap-2 border-b border-[#1F1F2D] bg-[#0B0B10] px-4 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1F1F2D] bg-[#0B0B10] px-4 py-2.5">
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
@@ -614,15 +709,50 @@ export function AssistantPage({
               Nouveau
             </button>
             <h1 className="hidden sm:block truncate font-display text-sm font-semibold text-[#FAFAFA]">
-              Assistant conversationnel NOVA AI
+              Assistant NOVA AI PRO
             </h1>
+            {summarizedActive && (
+              <span
+                title="Le contexte des messages les plus anciens est automatiquement résumé pour préserver la continuité."
+                className="inline-flex items-center gap-1 rounded-md border border-[#3B82F6]/35 bg-[#3B82F6]/10 px-2 py-0.5 text-[11px] font-medium text-[#93C5FD]"
+              >
+                <Layers className="h-3 w-3" />
+                Mémoire longue active
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {quota && (
-              <span className="md:hidden font-mono text-[11px] tabular-nums text-[#A8A8BE]">
-                {quota.chatRemaining}/{quota.chatLimit}
-              </span>
+            {providers.length > 0 && (
+              <div className="flex items-center gap-1.5 rounded-lg border border-[#232332] bg-[#111117] px-2 py-1 text-xs">
+                <Cpu className="h-3.5 w-3.5 text-[#3B82F6]" />
+                <select
+                  aria-label="Fournisseur et modèle IA"
+                  value={`${selectedProvider}:${selectedModel}`}
+                  onChange={(e) => {
+                    const [prov, mod] = e.target.value.split(':') as [AIProviderId, string];
+                    if (prov && mod) {
+                      setSelectedProvider(prov);
+                      setSelectedModel(mod);
+                    }
+                  }}
+                  className="bg-transparent text-xs text-[#E4E4EE] focus:outline-none"
+                >
+                  {providers.map((p) =>
+                    p.models.map((m) => (
+                      <option
+                        key={`${p.id}:${m.id}`}
+                        value={`${p.id}:${m.id}`}
+                        disabled={!p.configured}
+                        className="bg-[#111117] text-white"
+                      >
+                        {p.label} — {m.label}
+                        {!p.configured ? ' (non configuré)' : ''}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
             )}
             <button
               type="button"
@@ -634,7 +764,7 @@ export function AssistantPage({
               }`}
             >
               <Globe className="h-3.5 w-3.5" />
-              Recherche Web {useWebSearch ? 'activée' : 'auto'}
+              Web {useWebSearch ? 'activé' : 'auto'}
             </button>
           </div>
         </div>

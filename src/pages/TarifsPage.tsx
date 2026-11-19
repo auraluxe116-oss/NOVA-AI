@@ -15,40 +15,46 @@ const COMPARISON_ROWS: Array<{
   business: string;
 }> = [
   {
-    feature: 'Messages Assistant IA',
-    free: '15 / jour (5 invité)',
-    pro: '500 / jour',
-    business: '2 000 / jour',
+    feature: 'Messages Assistant IA (NOVA)',
+    free: 'Sans limite interne NOVA*',
+    pro: 'Sans limite interne NOVA*',
+    business: 'Sans limite interne NOVA*',
   },
   {
-    feature: 'Analyses Mode Business',
-    free: '3 / jour (1 invité)',
-    pro: '100 / jour',
-    business: '300 / jour',
-  },
-  {
-    feature: 'Documents joints max',
-    free: '40 Ko',
-    pro: '150 Ko',
-    business: '300 Ko',
-  },
-  {
-    feature: 'Propositions, factures & devis',
+    feature: 'Mémoire longue par résumé',
     free: 'Inclus',
-    pro: 'Inclus + Export .md',
-    business: 'Inclus + Export .md',
-  },
-  {
-    feature: 'Business Plans & E-commerce',
-    free: 'Non inclus',
     pro: 'Inclus',
     business: 'Inclus',
   },
   {
-    feature: "Création d'entreprise & Étude de marché",
-    free: 'Non inclus',
-    pro: 'Non inclus',
-    business: 'Inclus (priorité max)',
+    feature: '18 Modules Business & Contenu',
+    free: 'Inclus',
+    pro: 'Inclus',
+    business: 'Inclus',
+  },
+  {
+    feature: 'Création entreprise (Logo PNG + Site)',
+    free: 'Inclus',
+    pro: 'Inclus',
+    business: 'Inclus',
+  },
+  {
+    feature: 'Hébergement de sites publiés',
+    free: 'Jusqu’à 3 sites',
+    pro: 'Jusqu’à 25 sites',
+    business: 'Illimités',
+  },
+  {
+    feature: 'Studio Vidéo (.webm) & Export PDF',
+    free: 'Inclus',
+    pro: 'Inclus',
+    business: 'Inclus',
+  },
+  {
+    feature: 'Documents joints max',
+    free: '120 Ko',
+    pro: '512 Ko',
+    business: '2 Mo',
   },
   {
     feature: 'Factures & gestion Stripe',
@@ -124,15 +130,15 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
   return (
     <main className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
       <div className="mx-auto max-w-2xl text-center space-y-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
-          Tarifs transparents
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
+          Tarifs transparents · NOVA AI PRO
         </p>
         <h1 className="font-display text-3xl font-bold text-[#FAFAFA] sm:text-4xl">
-          Une formule adaptée à votre rythme d&apos;utilisation.
+          Aucun plafond artificiel de messages, quelle que soit la formule.
         </h1>
         <p className="text-sm text-[#A8A8BE] sm:text-base">
-          Passez au niveau supérieur à tout moment. Paiements sécurisés par Stripe avec
-          facturation mensuelle ou annuelle (-20 %).
+          Passez aux formules Pro ou Business pour héberger davantage de sites publiés, joindre
+          des documents plus volumineux et bénéficier du routage prioritaire Stripe.
         </p>
 
         {/* Billing Cadence Switch */}
@@ -228,25 +234,25 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               <span className="text-xs text-[#8D8DA4]">/ mois</span>
             </div>
             <p className="mt-2 text-xs text-[#A5A5BB]">
-              Pour poser vos questions du quotidien et tester NOVA AI.
+              Pour échanger librement et créer vos premiers projets avec NOVA AI PRO.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Questions générales &amp; IA en streaming</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Messagerie continue sans plafond NOVA*</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>15 messages / jour (5 / jour sans compte)</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Création d&apos;entreprise (Logo PNG + Site web)</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>3 analyses Mode Business / jour (1 sans compte)</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Jusqu&apos;à 3 sites publiés hébergés</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Propositions, factures rapides &amp; docs 40 Ko max</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Pièces jointes texte jusqu&apos;à 120 Ko &amp; export PDF</span>
               </li>
             </ul>
           </div>
@@ -281,29 +287,29 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               <span className="text-xs text-[#B5B5CC]">/ mois</span>
             </div>
             <p className="mt-2 text-xs text-[#B8B8D0]">
-              Pour entrepreneurs, créateurs et professionnels actifs.
+              Pour entrepreneurs, créateurs et consultants actifs.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#ECECF6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>500 messages / jour et 100 analyses Business / jour</span>
+                <span>Messagerie continue sans plafond NOVA* + priorité</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Mode Business avancé &amp; Business Plans complets</span>
+                <span>Jusqu&apos;à 25 sites publiés en ligne</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Stratégies marketing, e-commerce &amp; concurrence</span>
+                <span>Documents joints jusqu&apos;à 512 Ko</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Réponses prioritaires &amp; historique complet</span>
+                <span>Suite 18 modules, Contenu, Vidéo .webm &amp; PDF</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>Export Markdown &amp; documents jusqu&apos;à 150 Ko</span>
+                <span>Factures &amp; portail client Stripe</span>
               </li>
             </ul>
           </div>
@@ -345,29 +351,29 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               <span className="text-xs text-[#8D8DA4]">/ mois</span>
             </div>
             <p className="mt-2 text-xs text-[#A5A5BB]">
-              Pour fondateurs et entreprises exigeant une analyse stratégique complète.
+              Pour studios, agences et entreprises multi-projets.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>2 000 messages / jour et 300 analyses Business / jour</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Messagerie continue sans plafond NOVA* + priorité max</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Assistant complet création d&apos;entreprise</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Sites web publiés illimités</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Analyses commerciales &amp; études de marché avancées</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Documents joints volumineux jusqu&apos;à 2 Mo</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Plans de développement &amp; stratégies commerciales</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Créations d&apos;entreprise, Logos PNG &amp; Dossiers PDF</span>
               </li>
               <li className="flex items-start gap-2">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#8B5CF6]" />
-                <span>Documents jusqu&apos;à 300 Ko &amp; priorité maximale</span>
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
+                <span>Multi-fournisseurs IA &amp; portail Stripe dédié</span>
               </li>
             </ul>
           </div>
@@ -393,14 +399,14 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
       <section className="mt-14 rounded-xl border border-[#232332] bg-[#111117] overflow-hidden">
         <div className="border-b border-[#1F1F2D] px-6 py-4">
           <h2 className="font-display text-lg font-semibold text-white">
-            Comparatif détaillé des limites et droits
+            Comparatif détaillé des capacités
           </h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs sm:text-sm tabular-nums">
             <thead>
               <tr className="border-b border-[#232332] bg-[#0E0E14] text-[#FAFAFA]">
-                <th className="px-6 py-3 font-semibold">Capacité / Limite</th>
+                <th className="px-6 py-3 font-semibold">Capacité</th>
                 <th className="px-6 py-3 font-semibold">Gratuit</th>
                 <th className="px-6 py-3 font-semibold text-[#C4B5FD]">Pro</th>
                 <th className="px-6 py-3 font-semibold">Business</th>
@@ -420,12 +426,18 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         </div>
       </section>
 
-      <div className="mt-10 flex items-center justify-center gap-2 text-xs text-[#8E8EA6]">
-        <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />
-        <span>
-          Résiliation possible à tout moment depuis votre Profil ou le portail client Stripe.
-          Aucun engagement caché.
-        </span>
+      <div className="mt-8 space-y-2 text-center text-xs text-[#8E8EA6]">
+        <p>
+          * NOVA AI PRO n&apos;impose aucun compteur quotidien ou mensuel artificiel dans
+          l&apos;application. Seules les limites de débit techniques du fournisseur d&apos;IA
+          externe (ex. quota Google HTTP 429) et les protections anti-abus restent actives.
+        </p>
+        <div className="flex items-center justify-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />
+          <span>
+            Résiliation possible à tout moment depuis votre Profil ou le portail client Stripe.
+          </span>
+        </div>
       </div>
     </main>
   );

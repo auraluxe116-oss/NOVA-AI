@@ -1,27 +1,28 @@
-import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import { useState } from 'react';
-import { BrandLogoGenerator } from '../components/BrandLogoGenerator';
+
 const styles = ['Minimal', 'Premium', 'Tech'] as const;
-{/* Interactive Tool Card: Margin Calculator & Quick Invoice Builder */}
+
 export function BrandLogoGenerator() {
   const [name, setName] = useState('NOVA');
   const [slogan, setSlogan] = useState('INNOVATION & BUSINESS');
   const [color, setColor] = useState('#8B5CF6');
   const [background, setBackground] = useState('#111117');
   const [style, setStyle] = useState<(typeof styles)[number]>('Tech');
-{selectedModule === 'brand_creation' && (
-  <BrandLogoGenerator />
-)}
+
   const initial = (name.trim()[0] || 'N').toUpperCase();
 
   const escapeXml = (value: string) =>
-    value.replace(/[<>&"']/g, (char) => ({
-      '<': '&lt;',
-      '>': '&gt;',
-      '&': '&amp;',
-      '"': '&quot;',
-      "'": '&apos;',
-    })[char] || char);
+    value.replace(/[<>&"']/g, (char) =>
+      (
+        {
+          '<': '&lt;',
+          '>': '&gt;',
+          '&': '&amp;',
+          '"': '&quot;',
+          "'": '&apos;',
+        } as Record<string, string>
+      )[char] || char
+    );
 
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="900" height="450" viewBox="0 0 900 450">
@@ -121,7 +122,9 @@ export function BrandLogoGenerator() {
             className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] p-3 text-sm text-white"
           >
             {styles.map((item) => (
-              <option key={item} value={item}>{item}</option>
+              <option key={item} value={item}>
+                {item}
+              </option>
             ))}
           </select>
         </label>
@@ -153,7 +156,9 @@ export function BrandLogoGenerator() {
           className="block w-full"
           role="img"
           aria-label={`Aperçu du logo ${name}`}
-          dangerouslySetInnerHTML={{ __html: svg.replace(/^.*?<svg[^>]*>/s, '').replace(/<\/svg>\s*$/, '') }}
+          dangerouslySetInnerHTML={{
+            __html: svg.replace(/^.*?<svg[^>]*>/s, '').replace(/<\/svg>\s*$/, ''),
+          }}
         />
       </div>
 

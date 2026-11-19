@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import 'dotenv/config';
 import express from 'express';
 import {
@@ -13,33 +14,57 @@ import {
 } from './auth.js';
 import {
   addMessage,
+  countUserPublishedSites,
   createBusinessProject,
+  createCompanyCreation,
   createConversation,
   createUser,
+  createUserDocument,
   deleteBusinessProject,
+  deleteCompanyCreation,
   deleteConversation,
+  deleteConversationMessage,
+  deletePublishedSite,
+  deleteUserAccount,
+  deleteUserDocument,
   findUserByEmail,
   getConversationForUser,
   getDailyUsageCount,
   getDbStorageInfo,
   getLastConversationMessage,
+  getPublishedSiteBySlug,
   getUserDashboardStats,
   listBusinessProjects,
+  listCompanyCreations,
   listConversationMessages,
   listUserConversations,
+  listUserDocuments,
+  listUserPublishedSites,
   listUserSubscriptions,
+  publishSite,
   recordUsage,
   renameConversation,
   toPublicUser,
+  updateCompanyCreationAssets,
+  updateConversationSummary,
   updateUserProfile,
 } from './db.js';
 import {
   BUSINESS_MODULE_LABELS,
   GEMINI_MODELS,
+  generateCompanyCreationSuite,
+  generateLogoSvgOnly,
+  generateMarketingContent,
+  generateStructuredDocument,
+  generateVideoStoryboard,
+  getAvailableAIProviders,
   getGeminiApiKey,
+  getProviderApiKey,
   mapGeminiErrorMessage,
+  regenerateWebsiteHtmlOnly,
   streamBusinessProject,
   streamConversationResponse,
+  summarizeConversationHistory,
 } from './gemini.js';
 import {
   createBillingPortalForUser,
@@ -52,10 +77,9 @@ import {
   verifyCheckoutSessionForUser,
 } from './stripe.js';
 import {
-  GUEST_DAILY_BUSINESS_LIMIT,
-  GUEST_DAILY_CHAT_LIMIT,
   PLAN_SPECS,
   resolveEffectivePlan,
+  type AIProviderId,
   type BillingInterval,
   type ExperienceLevel,
   type PlanTier,
@@ -65,15 +89,13 @@ import {
 function buildQuotaSnapshot(user: PublicUser | null, ipHash: string) {
   const plan: PlanTier = user ? resolveEffectivePlan(user) : 'free';
   const spec = PLAN_SPECS[plan];
-  const chatLimit = user ? spec.dailyChatLimit : GUEST_DAILY_CHAT_LIMIT;
-  const businessLimit = user ? spec.dailyBusinessLimit : GUEST_DAILY_BUSINESS_LIMIT;
 
-  const chatUsed = getDailyUsageCount({
+  const chatUsedToday = getDailyUsageCount({
     userId: user?.id ?? null,
     ipHash,
     kind: 'chat',
   });
-  const businessUsed = getDailyUsageCount({
+  const businessUsedToday = getDailyUsageCount({
     userId: user?.id ?? null,
     ipHash,
     kind: 'business',
@@ -82,13 +104,11 @@ function buildQuotaSnapshot(user: PublicUser | null, ipHash: string) {
   return {
     plan,
     isAuthenticated: Boolean(user),
-    chatUsed,
-    chatLimit,
-    chatRemaining: Math.max(0, chatLimit - chatUsed),
-    businessUsed,
-    businessLimit,
-    businessRemaining: Math.max(0, businessLimit - businessUsed),
+    unlimitedInAppMessages: true,
+    chatUsedToday,
+    businessUsedToday,
     maxAttachmentBytes: spec.maxAttachmentBytes,
+    maxPublishedSites: spec.maxPublishedSites,
     exportEnabled: spec.exportEnabled,
     fullBusinessSuite: spec.fullBusinessSuite,
     companyCreationSuite: spec.companyCreationSuite,
@@ -104,14 +124,16 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
-const PRO_ONLY_BUSINESS_MODULES = new Set([
-  'business_plan',
-  'competitor_analysis',
-  'sales_strategy',
-  'ecommerce_store',
-]);
+export interface CreateAppOptions {
+  streamConversation?: typeof streamConversationResponse;
+  summarizeHistory?: typeof summarizeConversationHistory;
+  providerKeyChecker?: typeof getProviderApiKey;
+}
 
-export function createApp(): express.Express {
+export function createApp(options: CreateAppOptions = {}): express.Express {
+  const runConversationStream = options.streamConversation ?? streamConversationResponse;
+  const runSummarizeHistory = options.summarizeHistory ?? summarizeConversationHistory;
+  const resolveProviderKey = options.providerKeyChecker ?? getProviderApiKey;
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
@@ -142,16 +164,33 @@ export function createApp(): express.Express {
     }
   );
 
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '4mb' }));
 
-  // 2. System Health
+  // Public Published Website Hosting (/sites/:slug)
+  app.get('/sites/:slug', (req, res) => {
+    const slug = String(req.params.slug ?? '').trim();
+    if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
+      res.status(404).send('Site introuvable.');
+      return;
+    }
+    const site = getPublishedSiteBySlug(slug);
+    if (!site) {
+      res.status(404).send('<!doctype html><html lang="fr"><body style="font-family:sans-serif;background:#08080b;color:#fff;padding:40px"><h1>Site introuvable</h1><p>Ce site publié n’existe plus ou a été supprimé.</p></body></html>');
+      return;
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.send(site.html_content);
+  });
+
+  // 2. System Health & AI Providers
   app.get('/api/health', (_req, res) => {
     const aiConfigured = Boolean(getGeminiApiKey());
     const stripe = getStripeConfigStatus();
     const storage = getDbStorageInfo();
     res.json({
       ok: true,
-      brand: 'NOVA AI',
+      brand: 'NOVA AI PRO',
       runtime: process.env.VERCEL === '1' ? 'vercel-serverless' : 'node-server',
       aiConfigured,
       stripeConfigured: stripe.stripeConfigured,
@@ -165,7 +204,11 @@ export function createApp(): express.Express {
     });
   });
 
-  // 3. Authentication & Profile
+  app.get('/api/ai/providers', (_req, res) => {
+    res.json({ providers: getAvailableAIProviders() });
+  });
+
+  // 3. Authentication, Recovery & Profile
   app.post('/api/auth/register', (req, res) => {
     const ip = getClientIp(req);
     const ipHash = hashIp(ip);
@@ -210,17 +253,21 @@ export function createApp(): express.Express {
       return;
     }
 
+    // Generate personal cryptographic recovery code (shown once on signup)
+    const rawRecoveryCode = `NOVA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     const userRecord = createUser({
       email,
       passwordHash: hashPassword(password),
       displayName,
       companyName,
+      recoveryCodeHash: hashPassword(rawRecoveryCode),
     });
     const publicUser = toPublicUser(userRecord);
     setSessionCookie(req, res, publicUser.id);
     res.status(201).json({
       user: publicUser,
       quota: buildQuotaSnapshot(publicUser, ipHash),
+      recoveryCode: rawRecoveryCode,
     });
   });
 
@@ -263,6 +310,57 @@ export function createApp(): express.Express {
     });
   });
 
+  app.post('/api/auth/reset-password', (req, res) => {
+    const ip = getClientIp(req);
+    const ipHash = hashIp(ip);
+    const limit = checkRateLimit(`auth:reset:${ipHash}`, 10, 15 * 60_000);
+    if (!limit.allowed) {
+      res.status(429).json({
+        code: 'RATE_LIMITED',
+        error: `Trop de tentatives. Réessaie dans ${limit.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const recoveryCode = String(req.body?.recoveryCode ?? '').trim().toUpperCase();
+    const newPassword = String(req.body?.newPassword ?? '');
+
+    if (!isValidEmail(email) || !recoveryCode || newPassword.length < 8 || newPassword.length > 128) {
+      res.status(400).json({
+        code: 'INVALID_RESET_PAYLOAD',
+        error:
+          'Renseigne un e-mail valide, ton code de récupération personnel et un nouveau mot de passe (8 caractères min.).',
+      });
+      return;
+    }
+
+    const userRecord = findUserByEmail(email);
+    if (
+      !userRecord ||
+      !userRecord.recovery_code_hash ||
+      !verifyPassword(recoveryCode, userRecord.recovery_code_hash)
+    ) {
+      res.status(401).json({
+        code: 'INVALID_RECOVERY_CODE',
+        error: 'E-mail ou code de récupération invalide.',
+      });
+      return;
+    }
+
+    const nextRecoveryCode = `NOVA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    updateUserProfile(userRecord.id, {
+      passwordHash: hashPassword(newPassword),
+      recoveryCodeHash: hashPassword(nextRecoveryCode),
+    });
+
+    res.json({
+      ok: true,
+      nextRecoveryCode,
+      message: 'Mot de passe réinitialisé avec succès. Conserve ton nouveau code de récupération.',
+    });
+  });
+
   app.post('/api/auth/logout', (req, res) => {
     clearSessionCookie(req, res);
     res.json({ ok: true });
@@ -296,6 +394,11 @@ export function createApp(): express.Express {
       typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
     const newPassword =
       typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    const regenerateRecovery = Boolean(req.body?.regenerateRecoveryCode);
+    const rawPreferences =
+      req.body?.preferences && typeof req.body.preferences === 'object'
+        ? (req.body.preferences as Record<string, unknown>)
+        : undefined;
 
     if (displayName !== undefined && (displayName.length < 2 || displayName.length > 80)) {
       res.status(400).json({
@@ -324,10 +427,44 @@ export function createApp(): express.Express {
       nextPasswordHash = hashPassword(newPassword);
     }
 
+    let generatedRecoveryCode: string | undefined;
+    let nextRecoveryCodeHash: string | undefined;
+    if (regenerateRecovery) {
+      generatedRecoveryCode = `NOVA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+      nextRecoveryCodeHash = hashPassword(generatedRecoveryCode);
+    }
+
     const updated = updateUserProfile(userRecord.id, {
       displayName,
       companyName,
       passwordHash: nextPasswordHash,
+      recoveryCodeHash: nextRecoveryCodeHash,
+      preferences: rawPreferences
+        ? {
+            defaultExperience:
+              rawPreferences.defaultExperience === 'intermediaire' ||
+              rawPreferences.defaultExperience === 'confirme'
+                ? rawPreferences.defaultExperience
+                : rawPreferences.defaultExperience === 'debutant'
+                ? 'debutant'
+                : undefined,
+            preferredProvider:
+              rawPreferences.preferredProvider === 'openai' ||
+              rawPreferences.preferredProvider === 'anthropic' ||
+              rawPreferences.preferredProvider === 'mistral' ||
+              rawPreferences.preferredProvider === 'gemini'
+                ? rawPreferences.preferredProvider
+                : undefined,
+            preferredModel:
+              typeof rawPreferences.preferredModel === 'string'
+                ? rawPreferences.preferredModel
+                : undefined,
+            autoWebSearch:
+              typeof rawPreferences.autoWebSearch === 'boolean'
+                ? rawPreferences.autoWebSearch
+                : undefined,
+          }
+        : undefined,
     });
 
     if (!updated) {
@@ -340,7 +477,27 @@ export function createApp(): express.Express {
     res.json({
       user: publicUser,
       quota: buildQuotaSnapshot(publicUser, ipHash),
+      recoveryCode: generatedRecoveryCode ?? null,
     });
+  });
+
+  app.delete('/api/auth/account', (req, res) => {
+    const userRecord = getAuthenticatedUserRecord(req);
+    if (!userRecord) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const password = String(req.body?.password ?? '');
+    if (!password || !verifyPassword(password, userRecord.password_hash)) {
+      res.status(400).json({
+        code: 'WRONG_PASSWORD',
+        error: 'Mot de passe requis pour supprimer définitivement ton compte.',
+      });
+      return;
+    }
+    deleteUserAccount(userRecord.id);
+    clearSessionCookie(req, res);
+    res.json({ ok: true });
   });
 
   // 4. Dashboard Overview
@@ -356,6 +513,9 @@ export function createApp(): express.Express {
     const quota = buildQuotaSnapshot(user, ipHash);
     const recentConversations = listUserConversations(user.id).slice(0, 6);
     const recentProjects = listBusinessProjects(user.id).slice(0, 5);
+    const recentCompanyCreations = listCompanyCreations(user.id).slice(0, 5);
+    const publishedSites = listUserPublishedSites(user.id).slice(0, 8);
+    const recentDocuments = listUserDocuments(user.id).slice(0, 6);
     const subscriptions = listUserSubscriptions(user.id);
 
     res.json({
@@ -365,6 +525,9 @@ export function createApp(): express.Express {
       stats,
       recentConversations,
       recentProjects,
+      recentCompanyCreations,
+      publishedSites,
+      recentDocuments,
       subscriptions,
     });
   });
@@ -376,6 +539,7 @@ export function createApp(): express.Express {
       res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
       return;
     }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({ conversations: listUserConversations(user.id) });
   });
 
@@ -404,7 +568,8 @@ export function createApp(): express.Express {
       res.status(404).json({ code: 'NOT_FOUND', error: 'Conversation introuvable.' });
       return;
     }
-    const messages = listConversationMessages(conv.id, 120);
+    const messages = listConversationMessages(conv.id, 300);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({ conversation: conv, messages });
   });
 
@@ -441,13 +606,25 @@ export function createApp(): express.Express {
     res.json({ ok: true });
   });
 
-  // 6. Real-Time SSE Streaming Chat Assistant
+  // 6. Real-Time SSE Streaming Chat Assistant (No Artificial Daily/Monthly Caps!)
   app.post('/api/chat', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    const rawProvider = String(req.body?.provider ?? 'gemini').trim() as AIProviderId;
+    const provider: AIProviderId =
+      rawProvider === 'openai' ||
+      rawProvider === 'anthropic' ||
+      rawProvider === 'mistral'
+        ? rawProvider
+        : 'gemini';
+    const requestedModel =
+      typeof req.body?.model === 'string' ? req.body.model.trim() : undefined;
+
+    if (!resolveProviderKey(provider)) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error:
-          'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoutez-la dans les variables d’environnement Vercel (Settings > Environment Variables) puis redéployez.',
+          provider === 'gemini'
+            ? 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoute-la dans Settings > Secrets.'
+            : `Fournisseur ${provider} non configuré côté serveur (clé API manquante).`,
       });
       return;
     }
@@ -455,35 +632,27 @@ export function createApp(): express.Express {
     const ipHash = hashIp(getClientIp(req));
     const user = getAuthenticatedPublicUser(req);
 
+    // Anti-abuse burst flood protection ONLY (never blocks legitimate total message counts)
     const burst = checkRateLimit(
       `chat:burst:${user ? user.id : ipHash}`,
-      25,
+      45,
       60_000
     );
     if (!burst.allowed) {
       res.status(429).json({
         code: 'BURST_LIMIT',
-        error: `Cadence de requêtes trop élevée. Patiente ${burst.retryAfterSec} secondes.`,
+        error: `Cadence de requêtes trop rapide (anti-flood). Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;
     }
 
     const quota = buildQuotaSnapshot(user, ipHash);
-    if (quota.chatRemaining <= 0) {
-      res.status(429).json({
-        code: 'DAILY_QUOTA_REACHED',
-        error: user
-          ? `Limite quotidienne atteinte pour la formule ${quota.plan.toUpperCase()} (${quota.chatLimit} messages/jour). Passe à une formule supérieure pour continuer.`
-          : `Limite découverte atteinte (${GUEST_DAILY_CHAT_LIMIT} messages/jour sans compte). Inscris-toi gratuitement pour obtenir ${PLAN_SPECS.free.dailyChatLimit} messages/jour et l'historique complet.`,
-      });
-      return;
-    }
 
     const message = String(req.body?.message ?? '').trim();
-    if (!message || message.length > 16_000) {
+    if (!message || message.length > 24_000) {
       res.status(400).json({
         code: 'INVALID_MESSAGE',
-        error: 'Écris un message valide (entre 1 et 16 000 caractères).',
+        error: 'Écris un message valide (entre 1 et 24 000 caractères).',
       });
       return;
     }
@@ -514,6 +683,7 @@ export function createApp(): express.Express {
 
     let activeConversationId: string | null = null;
     let historyForModel: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    let contextSummary = '';
 
     if (user) {
       if (requestedConvId) {
@@ -523,25 +693,38 @@ export function createApp(): express.Express {
           return;
         }
         activeConversationId = existing.id;
+        contextSummary = existing.context_summary || '';
 
         const isRetry = Boolean(req.body?.isRetry);
         const lastMsg = getLastConversationMessage(existing.id);
+        const allMsgs = listConversationMessages(existing.id, 300);
+        const prevBeforeLast =
+          allMsgs.length >= 2 ? allMsgs[allMsgs.length - 2] : undefined;
+
         const alreadyTrailingSameUserPrompt =
-          lastMsg &&
+          lastMsg !== null &&
           lastMsg.role === 'user' &&
           lastMsg.content.trim() === message;
 
-        if (isRetry && alreadyTrailingSameUserPrompt) {
-          // Load previous turns excluding the trailing unanswered user message so Gemini sees clean history
-          historyForModel = listConversationMessages(existing.id, 15)
+        const regeneratingLastAssistantReply =
+          isRetry &&
+          lastMsg !== null &&
+          lastMsg.role === 'assistant' &&
+          prevBeforeLast !== undefined &&
+          prevBeforeLast.role === 'user' &&
+          prevBeforeLast.content.trim() === message;
+
+        if (isRetry && alreadyTrailingSameUserPrompt && lastMsg) {
+          historyForModel = allMsgs
             .filter((m) => m.id !== lastMsg.id)
-            .slice(-14)
-            .map((m) => ({
-              role: m.role,
-              content: m.content,
-            }));
+            .map((m) => ({ role: m.role, content: m.content }));
+        } else if (regeneratingLastAssistantReply && lastMsg && prevBeforeLast) {
+          deleteConversationMessage(lastMsg.id, existing.id);
+          historyForModel = allMsgs
+            .filter((m) => m.id !== lastMsg.id && m.id !== prevBeforeLast.id)
+            .map((m) => ({ role: m.role, content: m.content }));
         } else {
-          historyForModel = listConversationMessages(existing.id, 14).map((m) => ({
+          historyForModel = allMsgs.map((m) => ({
             role: m.role,
             content: m.content,
           }));
@@ -551,6 +734,24 @@ export function createApp(): express.Express {
             content: message,
             attachmentName: attachment?.name ?? null,
           });
+        }
+
+        // Smart context summarization for long conversations (> 14 messages)
+        const summarizedCount = existing.summarized_message_count ?? 0;
+        if (historyForModel.length > 14 && historyForModel.length - 10 > summarizedCount + 3) {
+          const olderSlice = historyForModel.slice(summarizedCount, historyForModel.length - 10);
+          const updatedSummary = await runSummarizeHistory({
+            existingSummary: contextSummary,
+            turnsToSummarize: olderSlice,
+          });
+          if (updatedSummary) {
+            contextSummary = updatedSummary;
+            updateConversationSummary(
+              existing.id,
+              updatedSummary,
+              historyForModel.length - 10
+            );
+          }
         }
       } else {
         const autoTitle = message.replace(/\s+/g, ' ').slice(0, 64);
@@ -568,22 +769,31 @@ export function createApp(): express.Express {
         });
       }
     } else if (Array.isArray(req.body?.guestHistory)) {
-      historyForModel = req.body.guestHistory
-        .slice(-12)
-        .filter(
-          (item: unknown): item is { role: 'user' | 'assistant'; content: string } =>
-            Boolean(item) &&
-            typeof item === 'object' &&
-            ((item as { role?: string }).role === 'user' ||
-              (item as { role?: string }).role === 'assistant') &&
-            typeof (item as { content?: unknown }).content === 'string'
-        );
+      const guestAll = req.body.guestHistory.filter(
+        (item: unknown): item is { role: 'user' | 'assistant'; content: string } =>
+          Boolean(item) &&
+          typeof item === 'object' &&
+          ((item as { role?: string }).role === 'user' ||
+            (item as { role?: string }).role === 'assistant') &&
+          typeof (item as { content?: unknown }).content === 'string'
+      );
+      if (guestAll.length > 14) {
+        const olderGuest = guestAll.slice(0, guestAll.length - 10);
+        const guestSummary = await runSummarizeHistory({
+          existingSummary: '',
+          turnsToSummarize: olderGuest,
+        });
+        if (guestSummary) {
+          contextSummary = guestSummary;
+        }
+      }
+      historyForModel = guestAll.slice(-12);
     }
 
     // Prepare SSE stream immediately with TCP_NODELAY
     res.socket?.setNoDelay(true);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Cache-Control', 'no-store, no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
@@ -609,11 +819,14 @@ export function createApp(): express.Express {
     });
 
     try {
-      const result = await streamConversationResponse({
+      const result = await runConversationStream({
         history: historyForModel,
+        contextSummary,
         userMessage: message,
         attachment,
         useWebSearch,
+        provider,
+        model: requestedModel,
         plan: user ? resolveEffectivePlan(user) : 'free',
         externalSignal: abortController.signal,
         callbacks: {
@@ -657,6 +870,7 @@ export function createApp(): express.Express {
         modelUsed: result.modelUsed,
         latencyMs: result.latencyMs,
         quota: nextQuota,
+        summarizedActive: Boolean(contextSummary),
       });
       res.end();
     } catch (err) {
@@ -677,7 +891,7 @@ export function createApp(): express.Express {
     }
   });
 
-  // 7. Mode Business Routes
+  // 7. Mode Business Routes (18 Modules + Generator + Company Creation Studio)
   app.get('/api/business/projects', (req, res) => {
     const user = getAuthenticatedPublicUser(req);
     if (!user) {
@@ -706,7 +920,7 @@ export function createApp(): express.Express {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error:
-          'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoutez-la dans les variables d’environnement Vercel (Settings > Environment Variables) puis redéployez.',
+          'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoute-la dans Settings > Secrets.',
       });
       return;
     }
@@ -716,7 +930,7 @@ export function createApp(): express.Express {
 
     const burst = checkRateLimit(
       `biz:burst:${user ? user.id : ipHash}`,
-      12,
+      25,
       60_000
     );
     if (!burst.allowed) {
@@ -740,6 +954,8 @@ export function createApp(): express.Express {
     const sector = String(req.body?.sector ?? '').trim();
     const budgetEur = Number(req.body?.budgetEur ?? 0);
     const goal = String(req.body?.goal ?? '').trim();
+    const skills = String(req.body?.skills ?? '').trim().slice(0, 500);
+    const weeklyHours = req.body?.weeklyHours ? Number(req.body.weeklyHours) : undefined;
     const rawLevel = String(req.body?.experienceLevel ?? 'debutant').trim();
     const experienceLevel: ExperienceLevel =
       rawLevel === 'intermediaire' || rawLevel === 'confirme' ? rawLevel : 'debutant';
@@ -750,35 +966,6 @@ export function createApp(): express.Express {
       res.status(400).json({
         code: 'MISSING_FIELDS',
         error: 'Renseigne le titre du projet, le secteur et l’objectif principal.',
-      });
-      return;
-    }
-
-    const plan: PlanTier = user ? resolveEffectivePlan(user) : 'free';
-    if (moduleKey === 'company_creation' && plan !== 'business') {
-      res.status(403).json({
-        code: 'PLAN_UPGRADE_REQUIRED',
-        error:
-          "Le module Création d'entreprise & Étude de marché approfondie nécessite un abonnement BUSINESS actif (19,99 €/mois).",
-      });
-      return;
-    }
-    if (PRO_ONLY_BUSINESS_MODULES.has(moduleKey) && plan === 'free') {
-      res.status(403).json({
-        code: 'PLAN_UPGRADE_REQUIRED',
-        error:
-          'Ce module stratégique avancé nécessite un abonnement PRO (9,99 €/mois) ou BUSINESS actif.',
-      });
-      return;
-    }
-
-    const quota = buildQuotaSnapshot(user, ipHash);
-    if (quota.businessRemaining <= 0) {
-      res.status(429).json({
-        code: 'BUSINESS_QUOTA_REACHED',
-        error: user
-          ? `Limite quotidienne Mode Business atteinte (${quota.businessLimit}/jour pour ${quota.plan.toUpperCase()}).`
-          : `Limite découverte Mode Business atteinte (${GUEST_DAILY_BUSINESS_LIMIT}/jour sans compte). Crée un compte gratuit ou passe en Pro.`,
       });
       return;
     }
@@ -813,6 +1000,8 @@ export function createApp(): express.Express {
         sector,
         budgetEur: Number.isFinite(budgetEur) ? Math.max(0, budgetEur) : 0,
         goal,
+        skills,
+        weeklyHours: Number.isFinite(weeklyHours) ? weeklyHours : undefined,
         experienceLevel,
         contextDetails,
         useWebSearch,
@@ -874,6 +1063,504 @@ export function createApp(): express.Express {
       res.end();
     } finally {
       clearInterval(keepaliveTimer);
+    }
+  });
+
+  // 7B. Real Company Creation Studio (Logo PNG/SVG + Website HTML + Brand Kit + Commercial Offer + Business Plan)
+  app.get('/api/business/company-creations', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    res.json({ creations: listCompanyCreations(user.id) });
+  });
+
+  app.delete('/api/business/company-creations/:id', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const deleted = deleteCompanyCreation(req.params.id, user.id);
+    if (!deleted) {
+      res.status(404).json({ code: 'NOT_FOUND', error: 'Création introuvable.' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/business/company-suite', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`company:burst:${user ? user.id : ipHash}`, 10, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes avant de relancer une génération complète.`,
+      });
+      return;
+    }
+
+    const projectTitle = String(req.body?.title ?? '').trim();
+    const sector = String(req.body?.sector ?? '').trim();
+    const budgetEur = Number(req.body?.budgetEur ?? 0);
+    const goal = String(req.body?.goal ?? '').trim();
+    const skills = String(req.body?.skills ?? '').trim().slice(0, 500);
+    const weeklyHours = req.body?.weeklyHours ? Number(req.body.weeklyHours) : undefined;
+    const rawLevel = String(req.body?.experienceLevel ?? 'debutant').trim();
+    const experienceLevel: ExperienceLevel =
+      rawLevel === 'intermediaire' || rawLevel === 'confirme' ? rawLevel : 'debutant';
+    const contextDetails = String(req.body?.contextDetails ?? '').trim().slice(0, 2000);
+
+    if (!projectTitle || !sector || !goal) {
+      res.status(400).json({
+        code: 'MISSING_FIELDS',
+        error: 'Renseigne le nom du projet, le secteur et l’objectif principal.',
+      });
+      return;
+    }
+
+    try {
+      const { suite, modelUsed } = await generateCompanyCreationSuite({
+        projectTitle,
+        sector,
+        budgetEur: Number.isFinite(budgetEur) ? Math.max(0, budgetEur) : 0,
+        goal,
+        skills,
+        weeklyHours: Number.isFinite(weeklyHours) ? weeklyHours : undefined,
+        experienceLevel,
+        contextDetails,
+      });
+
+      recordUsage({
+        userId: user?.id ?? null,
+        ipHash,
+        kind: 'business',
+      });
+
+      let saved = null;
+      if (user) {
+        saved = createCompanyCreation({
+          userId: user.id,
+          title: suite.brandIdentity.brandName || projectTitle,
+          sector,
+          budgetEur: Number.isFinite(budgetEur) ? Math.max(0, budgetEur) : 0,
+          dataJson: JSON.stringify({
+            brandIdentity: suite.brandIdentity,
+            commercialOffer: suite.commercialOffer,
+            businessPlan: suite.businessPlan,
+          }),
+          logoSvg: suite.logoSvg,
+          websiteHtml: suite.websiteHtml,
+          modelUsed,
+        });
+      }
+
+      res.json({
+        suite,
+        creationId: saved?.id ?? null,
+        modelUsed,
+        quota: buildQuotaSnapshot(user, ipHash),
+      });
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+    }
+  });
+
+  app.post('/api/business/generate-logo', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`logo:burst:${user ? user.id : ipHash}`, 15, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const brandName = String(req.body?.brandName ?? '').trim();
+    const sector = String(req.body?.sector ?? '').trim();
+    const primaryColor = String(req.body?.primaryColor ?? '#3B82F6').trim();
+    const secondaryColor = String(req.body?.secondaryColor ?? '#7C3AED').trim();
+    const styleHint = String(req.body?.styleHint ?? '').trim();
+    const creationId = typeof req.body?.creationId === 'string' ? req.body.creationId : null;
+
+    if (!brandName) {
+      res.status(400).json({ code: 'MISSING_BRAND', error: 'Nom de marque requis.' });
+      return;
+    }
+
+    try {
+      const { logoSvg, modelUsed } = await generateLogoSvgOnly({
+        brandName,
+        sector: sector || 'Services numériques',
+        primaryColor,
+        secondaryColor,
+        styleHint,
+      });
+      if (user && creationId) {
+        updateCompanyCreationAssets(creationId, user.id, { logoSvg });
+      }
+      res.json({ logoSvg, modelUsed });
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+    }
+  });
+
+  app.post('/api/business/generate-website', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`sitegen:burst:${user ? user.id : ipHash}`, 12, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const brandName = String(req.body?.brandName ?? '').trim();
+    const slogan = String(req.body?.slogan ?? '').trim();
+    const sector = String(req.body?.sector ?? '').trim();
+    const primaryColor = String(req.body?.primaryColor ?? '#3B82F6').trim();
+    const secondaryColor = String(req.body?.secondaryColor ?? '#111827').trim();
+    const accentColor = String(req.body?.accentColor ?? '#7C3AED').trim();
+    const packagesText = String(req.body?.packagesText ?? '').trim();
+    const logoSvg = String(req.body?.logoSvg ?? '').trim();
+    const customInstructions = String(req.body?.customInstructions ?? '').trim();
+    const creationId = typeof req.body?.creationId === 'string' ? req.body.creationId : null;
+
+    if (!brandName) {
+      res.status(400).json({ code: 'MISSING_BRAND', error: 'Nom de marque requis.' });
+      return;
+    }
+
+    try {
+      const { websiteHtml, modelUsed } = await regenerateWebsiteHtmlOnly({
+        brandName,
+        slogan,
+        sector: sector || 'Entreprise',
+        primaryColor,
+        secondaryColor,
+        accentColor,
+        packagesText,
+        logoSvg,
+        customInstructions,
+      });
+      if (user && creationId) {
+        updateCompanyCreationAssets(creationId, user.id, { websiteHtml });
+      }
+      res.json({ websiteHtml, modelUsed });
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+    }
+  });
+
+  // 7C. Live Website Publishing
+  app.post('/api/sites/publish', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    const title = String(req.body?.title ?? 'Site NOVA').trim();
+    const htmlContent = String(req.body?.htmlContent ?? '').trim();
+    const existingSlug = typeof req.body?.existingSlug === 'string' ? req.body.existingSlug.trim() : null;
+    const creationId = typeof req.body?.creationId === 'string' ? req.body.creationId.trim() : null;
+
+    if (!htmlContent || htmlContent.length < 50) {
+      res.status(400).json({
+        code: 'INVALID_HTML',
+        error: 'Aucun code HTML valide à publier.',
+      });
+      return;
+    }
+
+    if (user && !existingSlug) {
+      const plan = resolveEffectivePlan(user);
+      const maxSites = PLAN_SPECS[plan].maxPublishedSites;
+      if (maxSites !== null && countUserPublishedSites(user.id) >= maxSites) {
+        res.status(403).json({
+          code: 'SITES_LIMIT_REACHED',
+          error: `Votre formule ${plan.toUpperCase()} permet jusqu'à ${maxSites} sites publiés simultanément. Supprimez-en un ou passez à une formule supérieure.`,
+        });
+        return;
+      }
+    }
+
+    const site = publishSite({
+      userId: user?.id ?? null,
+      title,
+      htmlContent,
+      existingSlug,
+    });
+
+    if (user && creationId) {
+      updateCompanyCreationAssets(creationId, user.id, {
+        websiteHtml: htmlContent,
+        publishedSlug: site.slug,
+      });
+    }
+
+    const originUrl = resolveAppBaseUrl(req.headers.origin as string | undefined);
+    res.json({
+      site: {
+        id: site.id,
+        slug: site.slug,
+        title: site.title,
+        created_at: site.created_at,
+        updated_at: site.updated_at,
+      },
+      publicPath: `/sites/${site.slug}`,
+      publicUrl: `${originUrl}/sites/${site.slug}`,
+    });
+  });
+
+  app.get('/api/sites', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    res.json({ sites: listUserPublishedSites(user.id) });
+  });
+
+  app.delete('/api/sites/:id', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const deleted = deletePublishedSite(req.params.id, user.id);
+    if (!deleted) {
+      res.status(404).json({ code: 'NOT_FOUND', error: 'Site introuvable.' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // 7D. Content Creation Studio
+  app.post('/api/content/generate', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`content:burst:${user ? user.id : ipHash}`, 25, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const formatKey = String(req.body?.formatKey ?? 'tiktok_script').trim();
+    const topic = String(req.body?.topic ?? '').trim();
+    const targetAudience = String(req.body?.targetAudience ?? '').trim();
+    const tone = String(req.body?.tone ?? '').trim();
+    const callToAction = String(req.body?.callToAction ?? '').trim();
+
+    if (!topic) {
+      res.status(400).json({ code: 'MISSING_TOPIC', error: 'Précise le sujet du contenu.' });
+      return;
+    }
+
+    try {
+      const result = await generateMarketingContent({
+        formatKey,
+        topic,
+        targetAudience,
+        tone,
+        callToAction,
+      });
+      res.json(result);
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+    }
+  });
+
+  // 7E. Video Storyboard Creation
+  app.post('/api/video/storyboard', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`video:burst:${user ? user.id : ipHash}`, 15, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const topic = String(req.body?.topic ?? '').trim();
+    const format = req.body?.format === '16:9' ? '16:9' : '9:16';
+    const tone = String(req.body?.tone ?? 'Dynamique et professionnel').trim();
+    const durationTargetSec = Number(req.body?.durationTargetSec ?? 25);
+    const sourceScript = String(req.body?.sourceScript ?? '').trim();
+
+    if (!topic && !sourceScript) {
+      res.status(400).json({
+        code: 'MISSING_TOPIC',
+        error: 'Renseigne un sujet ou colle un script vidéo.',
+      });
+      return;
+    }
+
+    try {
+      const result = await generateVideoStoryboard({
+        topic: topic || sourceScript.slice(0, 80),
+        format,
+        tone,
+        durationTargetSec: Number.isFinite(durationTargetSec) ? durationTargetSec : 25,
+        sourceScript,
+      });
+      res.json(result);
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+    }
+  });
+
+  // 7F. Documents Studio (CRUD + AI Generation)
+  app.get('/api/documents', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    res.json({ documents: listUserDocuments(user.id) });
+  });
+
+  app.post('/api/documents', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const docType = String(req.body?.docType ?? 'rapport').trim();
+    const title = String(req.body?.title ?? '').trim();
+    const contentMarkdown = String(req.body?.contentMarkdown ?? '').trim();
+    if (!title || !contentMarkdown) {
+      res.status(400).json({ code: 'MISSING_FIELDS', error: 'Titre et contenu requis.' });
+      return;
+    }
+    const doc = createUserDocument({
+      userId: user.id,
+      docType,
+      title,
+      contentMarkdown,
+      metadataJson: JSON.stringify(req.body?.metadata ?? {}),
+    });
+    res.status(201).json({ document: doc });
+  });
+
+  app.delete('/api/documents/:id', (req, res) => {
+    const user = getAuthenticatedPublicUser(req);
+    if (!user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const deleted = deleteUserDocument(req.params.id, user.id);
+    if (!deleted) {
+      res.status(404).json({ code: 'NOT_FOUND', error: 'Document introuvable.' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/documents/generate', async (req, res) => {
+    if (!getGeminiApiKey()) {
+      res.status(503).json({
+        code: 'AI_NOT_CONFIGURED',
+        error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
+      });
+      return;
+    }
+    const ipHash = hashIp(getClientIp(req));
+    const user = getAuthenticatedPublicUser(req);
+    const burst = checkRateLimit(`doc:burst:${user ? user.id : ipHash}`, 20, 60_000);
+    if (!burst.allowed) {
+      res.status(429).json({
+        code: 'BURST_LIMIT',
+        error: `Patiente ${burst.retryAfterSec} secondes.`,
+      });
+      return;
+    }
+
+    const docType = String(req.body?.docType ?? 'Proposition commerciale').trim();
+    const title = String(req.body?.title ?? '').trim();
+    const companyName = String(req.body?.companyName ?? '').trim();
+    const clientName = String(req.body?.clientName ?? '').trim();
+    const context = String(req.body?.context ?? '').trim();
+
+    if (!title || !context) {
+      res.status(400).json({
+        code: 'MISSING_FIELDS',
+        error: 'Renseigne le titre et le contexte du document.',
+      });
+      return;
+    }
+
+    try {
+      const { contentMarkdown, modelUsed } = await generateStructuredDocument({
+        docType,
+        title,
+        companyName,
+        clientName,
+        context,
+      });
+
+      let saved = null;
+      if (user) {
+        saved = createUserDocument({
+          userId: user.id,
+          docType,
+          title,
+          contentMarkdown,
+          metadataJson: JSON.stringify({ companyName, clientName, modelUsed }),
+        });
+      }
+
+      res.json({ contentMarkdown, modelUsed, document: saved });
+    } catch (err) {
+      const mapped = mapGeminiErrorMessage(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
     }
   });
 

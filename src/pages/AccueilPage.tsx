@@ -35,16 +35,16 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
       <section className="border-b border-[#1D1D29]">
         <div className="mx-auto grid max-w-7xl gap-10 px-4 py-14 sm:px-6 lg:grid-cols-12 lg:items-center lg:py-20">
           <div className="lg:col-span-7 space-y-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#A78BFA]">
-              Plateforme d&apos;intelligence artificielle francophone
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
+              Plateforme IA &amp; Suite Entrepreneuriale · NOVA AI PRO
             </p>
             <h1 className="font-display text-[clamp(2.25rem,4.4vw,3.75rem)] font-bold leading-[1.06] tracking-tight text-[#FAFAFA]">
-              Réfléchir plus vite, analyser sans détour et bâtir des projets solides.
+              Créer votre entreprise, produire vos médias et piloter vos projets sans friction.
             </h1>
             <p className="max-w-2xl text-base leading-relaxed text-[#B2B2C6] sm:text-lg">
-              NOVA AI réunit un assistant conversationnel temps réel en streaming, un Mode
-              Business structuré en 7 étapes, l&apos;analyse de documents et la vérification
-              web avec sources cliquables.
+              NOVA AI PRO réunit un assistant conversationnel temps réel sans plafond interne,
+              un générateur complet d&apos;entreprise (Logo PNG, Site publié, Marque, Offre &amp;
+              Business Plan), un Studio Contenu &amp; Vidéo WebM et l&apos;export PDF.
             </p>
 
             {/* Quick Launch Bar directly wired to live streaming Assistant */}
@@ -57,12 +57,12 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
                 value={quickInput}
                 onChange={(e) => setQuickInput(e.target.value)}
                 placeholder="Posez une question business, technique, financière ou stratégique..."
-                aria-label="Question rapide pour NOVA AI"
+                aria-label="Question rapide pour NOVA AI PRO"
                 className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#FAFAFA] placeholder-[#7B7B93] focus:outline-none"
               />
               <button
                 type="submit"
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#7C3AED] px-5 py-2.5 text-sm font-semibold text-white hover:opacity-95 transition-opacity whitespace-nowrap shrink-0"
               >
                 Demander à NOVA
                 <ArrowRight className="h-4 w-4" />
@@ -199,19 +199,19 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
                 <Briefcase className="h-4 w-4 text-[#8B5CF6]" />
               </div>
               <h3 className="font-display text-xl font-semibold text-white">
-                Mode Business structuré en 7 étapes
+                Création d&apos;entreprise réelle &amp; 18 Modules
               </h3>
               <p className="mt-2.5 text-sm leading-relaxed text-[#B5B5C9]">
-                Chaque projet est cadré avec la même rigueur : objectif, budget réel (même
-                à 0 €), outils nécessaires, étapes de réalisation, risques, possibilités de
-                revenus sans promesse irréaliste, et plan d&apos;action concret.
+                Générez un véritable Logo PNG, un site web fonctionnel publiable en ligne, une
+                identité de marque, une offre commerciale tarifée, un business plan 7/30/90 jours,
+                du contenu marketing, des vidéos WebM et des documents PDF.
               </p>
               <button
                 type="button"
                 onClick={() => onNavigate('business')}
-                className="mt-5 inline-flex items-center gap-1.5 text-sm font-semibold text-[#C4B5FD] hover:text-white"
+                className="mt-5 inline-flex items-center gap-1.5 text-sm font-semibold text-[#93C5FD] hover:text-white"
               >
-                Ouvrir le Mode Business
+                Ouvrir le Studio Business
                 <ArrowRight className="h-4 w-4" />
               </button>
             </div>

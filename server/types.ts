@@ -2,10 +2,27 @@ export type PlanTier = 'free' | 'pro' | 'business';
 export type BillingInterval = 'monthly' | 'annual';
 export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
 export type ExperienceLevel = 'debutant' | 'intermediaire' | 'confirme';
+export type AIProviderId = 'gemini' | 'openai' | 'anthropic' | 'mistral';
+
+export interface AIProviderInfo {
+  id: AIProviderId;
+  label: string;
+  configured: boolean;
+  defaultModel: string;
+  models: Array<{ id: string; label: string }>;
+  note: string;
+}
 
 export interface SourceLink {
   title: string;
   url: string;
+}
+
+export interface UserPreferences {
+  defaultExperience: ExperienceLevel;
+  preferredProvider: AIProviderId;
+  preferredModel: string;
+  autoWebSearch: boolean;
 }
 
 export interface StripeInvoiceSummary {
@@ -26,9 +43,9 @@ export interface PlanSpec {
   monthlyPriceEur: number;
   annualMonthlyEquivalentEur: number;
   annualTotalEur: number;
-  dailyChatLimit: number;
-  dailyBusinessLimit: number;
+  unlimitedInAppMessages: boolean;
   maxAttachmentBytes: number;
+  maxPublishedSites: number | null;
   priorityRouting: boolean;
   webSearchIncluded: boolean;
   fullBusinessSuite: boolean;
@@ -40,45 +57,45 @@ export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
   free: {
     id: 'free',
     name: 'GRATUIT',
-    tagline: 'Pour découvrir NOVA AI au quotidien',
+    tagline: 'Pour découvrir NOVA AI PRO sans plafond interne de messages',
     monthlyPriceEur: 0,
     annualMonthlyEquivalentEur: 0,
     annualTotalEur: 0,
-    dailyChatLimit: 15,
-    dailyBusinessLimit: 3,
-    maxAttachmentBytes: 40 * 1024,
+    unlimitedInAppMessages: true,
+    maxAttachmentBytes: 120 * 1024,
+    maxPublishedSites: 3,
     priorityRouting: false,
     webSearchIncluded: true,
-    fullBusinessSuite: false,
-    companyCreationSuite: false,
-    exportEnabled: false,
+    fullBusinessSuite: true,
+    companyCreationSuite: true,
+    exportEnabled: true,
   },
   pro: {
     id: 'pro',
     name: 'PRO',
-    tagline: 'Pour entrepreneurs, indépendants et créateurs',
+    tagline: 'Pour entrepreneurs, indépendants et créateurs exigeants',
     monthlyPriceEur: 9.99,
     annualMonthlyEquivalentEur: 7.99,
     annualTotalEur: 95.88,
-    dailyChatLimit: 500,
-    dailyBusinessLimit: 100,
-    maxAttachmentBytes: 150 * 1024,
+    unlimitedInAppMessages: true,
+    maxAttachmentBytes: 512 * 1024,
+    maxPublishedSites: 25,
     priorityRouting: true,
     webSearchIncluded: true,
     fullBusinessSuite: true,
-    companyCreationSuite: false,
+    companyCreationSuite: true,
     exportEnabled: true,
   },
   business: {
     id: 'business',
-    name: 'BUSINESS',
+    name: 'PREMIUM',
     tagline: 'Pour fondateurs, dirigeants et équipes en croissance',
     monthlyPriceEur: 19.99,
     annualMonthlyEquivalentEur: 15.99,
     annualTotalEur: 191.88,
-    dailyChatLimit: 2000,
-    dailyBusinessLimit: 300,
-    maxAttachmentBytes: 300 * 1024,
+    unlimitedInAppMessages: true,
+    maxAttachmentBytes: 2048 * 1024,
+    maxPublishedSites: null,
     priorityRouting: true,
     webSearchIncluded: true,
     fullBusinessSuite: true,
@@ -86,9 +103,6 @@ export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
     exportEnabled: true,
   },
 };
-
-export const GUEST_DAILY_CHAT_LIMIT = 5;
-export const GUEST_DAILY_BUSINESS_LIMIT = 1;
 
 export interface UserRecord {
   id: string;
@@ -103,6 +117,8 @@ export interface UserRecord {
   stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
   current_period_end: string | null;
+  recovery_code_hash?: string | null;
+  preferences_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -120,6 +136,8 @@ export interface PublicUser {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   currentPeriodEnd: string | null;
+  hasRecoveryCode: boolean;
+  preferences: UserPreferences;
   createdAt: string;
 }
 
@@ -140,6 +158,81 @@ export interface SubscriptionRow {
   canceled_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CompanyCreationResult {
+  brandIdentity: {
+    brandName: string;
+    slogan: string;
+    positioning: string;
+    toneOfVoice: string;
+    targetAudience: string;
+    colors: {
+      primary: string;
+      secondary: string;
+      accent: string;
+      background: string;
+      text: string;
+    };
+    typography: {
+      displayFont: string;
+      bodyFont: string;
+      rationale: string;
+    };
+    visualGuidelines: string[];
+  };
+  logoSvg: string;
+  commercialOffer: {
+    headline: string;
+    valueProposition: string;
+    packages: Array<{
+      name: string;
+      priceLabel: string;
+      targetClient: string;
+      deliverables: string[];
+      timeline: string;
+    }>;
+    salesPitch: string;
+  };
+  businessPlan: {
+    executiveSummary: string;
+    financialPlan: {
+      startupCostsEur: Array<{ item: string; amountEur: number }>;
+      monthlyFixedCostsEur: number;
+      unitPriceEur: number;
+      unitVariableCostEur: number;
+      breakEvenClientsPerMonth: number;
+      prudentScenarioNote: string;
+    };
+    marketingStrategy: string[];
+    firstClientsPlan: {
+      days7: string[];
+      days30: string[];
+      days90: string[];
+    };
+    keyRisks: string[];
+  };
+  websiteHtml: string;
+}
+
+export interface VideoScene {
+  id: string;
+  title: string;
+  shotType: string;
+  visualDirection: string;
+  onScreenText: string;
+  voiceover: string;
+  subtitle: string;
+  durationSec: number;
+  accentColor: string;
+}
+
+export interface VideoStoryboard {
+  title: string;
+  format: '9:16' | '16:9';
+  hook: string;
+  callToAction: string;
+  scenes: VideoScene[];
 }
 
 export function resolveEffectivePlan(input: {

@@ -1,14 +1,21 @@
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import type { ExperienceLevel, PlanTier, SourceLink } from './types.js';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import type {
+  AIProviderId,
+  AIProviderInfo,
+  CompanyCreationResult,
+  ExperienceLevel,
+  PlanTier,
+  SourceLink,
+  VideoStoryboard,
+} from './types.js';
 
 export const GEMINI_MODELS = {
-  primary: 'gemini-3.1-flash-lite',
-  fallback: 'gemini-3.5-flash-lite',
+  primary: 'gemini-4-hydrogen',
+  fallback: 'gemini-3.1-flash-lite',
 } as const;
 
-
-const TTFT_PRIMARY_MS = 5_500;
-const TTFT_FALLBACK_MS = 14_000;
+const TTFT_PRIMARY_MS = 6_500;
+const TTFT_FALLBACK_MS = 16_000;
 const STREAM_INACTIVITY_MS = 35_000;
 const COOLDOWN_MS = 90_000;
 
@@ -21,15 +28,96 @@ function isPrimaryHealthy(): boolean {
 function tripPrimaryCooldown(reason: unknown): void {
   primaryCooldownUntil = Date.now() + COOLDOWN_MS;
   console.warn(
-    `[NOVA AI] Bascule temporaire vers ${GEMINI_MODELS.fallback} pendant 90s :`,
+    `[NOVA AI PRO] Bascule temporaire vers ${GEMINI_MODELS.fallback} pendant 90s :`,
     reason instanceof Error ? reason.message : String(reason)
   );
 }
 
-export function getGeminiApiKey(): string | null {
-  const raw = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)?.trim();
-  if (!raw || raw === 'MY_GEMINI_API_KEY') return null;
+function cleanSecret(value: string | undefined, placeholders: string[]): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (placeholders.includes(raw)) return null;
   return raw;
+}
+
+export function getGeminiApiKey(): string | null {
+  return cleanSecret(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY, [
+    'MY_GEMINI_API_KEY',
+  ]);
+}
+
+export function getProviderApiKey(provider: AIProviderId): string | null {
+  switch (provider) {
+    case 'gemini':
+      return getGeminiApiKey();
+    case 'openai':
+      return cleanSecret(process.env.OPENAI_API_KEY, ['MY_OPENAI_API_KEY']);
+    case 'anthropic':
+      return cleanSecret(process.env.ANTHROPIC_API_KEY, ['MY_ANTHROPIC_API_KEY']);
+    case 'mistral':
+      return cleanSecret(process.env.MISTRAL_API_KEY, ['MY_MISTRAL_API_KEY']);
+    default:
+      return null;
+  }
+}
+
+export function getAvailableAIProviders(): AIProviderInfo[] {
+  const geminiKey = Boolean(getGeminiApiKey());
+  const openaiKey = Boolean(getProviderApiKey('openai'));
+  const anthropicKey = Boolean(getProviderApiKey('anthropic'));
+  const mistralKey = Boolean(getProviderApiKey('mistral'));
+
+  return [
+    {
+      id: 'gemini',
+      label: 'Google Gemini',
+      configured: geminiKey,
+      defaultModel: GEMINI_MODELS.primary,
+      models: [
+        { id: GEMINI_MODELS.primary, label: 'Gemini 4 Hydrogen (Principal)' },
+        { id: GEMINI_MODELS.fallback, label: 'Gemini 3.1 Flash Lite (Rapide)' },
+      ],
+      note: geminiKey
+        ? 'Connecté (recherche web Google incluse).'
+        : 'Clé GEMINI_API_KEY requise dans Settings > Secrets.',
+    },
+    {
+      id: 'openai',
+      label: 'OpenAI',
+      configured: openaiKey,
+      defaultModel: 'gpt-4o-mini',
+      models: [
+        { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+        { id: 'gpt-4o', label: 'GPT-4o' },
+      ],
+      note: openaiKey
+        ? 'Connecté via OPENAI_API_KEY.'
+        : 'Non configuré (ajoutez OPENAI_API_KEY côté serveur pour activer).',
+    },
+    {
+      id: 'mistral',
+      label: 'Mistral AI',
+      configured: mistralKey,
+      defaultModel: 'mistral-small-latest',
+      models: [
+        { id: 'mistral-small-latest', label: 'Mistral Small' },
+        { id: 'mistral-large-latest', label: 'Mistral Large' },
+      ],
+      note: mistralKey
+        ? 'Connecté via MISTRAL_API_KEY.'
+        : 'Non configuré (ajoutez MISTRAL_API_KEY côté serveur pour activer).',
+    },
+    {
+      id: 'anthropic',
+      label: 'Anthropic Claude',
+      configured: anthropicKey,
+      defaultModel: 'claude-3-5-haiku-latest',
+      models: [{ id: 'claude-3-5-haiku-latest', label: 'Claude 3.5 Haiku' }],
+      note: anthropicKey
+        ? 'Connecté via ANTHROPIC_API_KEY.'
+        : 'Non configuré (ajoutez ANTHROPIC_API_KEY côté serveur pour activer).',
+    },
+  ];
 }
 
 let cachedKey: string | null = null;
@@ -56,8 +144,6 @@ function isTransientError(err: unknown): boolean {
     msg.includes('unavailable') ||
     msg.includes('high demand') ||
     msg.includes('overloaded') ||
-    msg.includes('429') ||
-    msg.includes('resource_exhausted') ||
     msg.includes('timeout') ||
     msg.includes('econnreset') ||
     msg.includes('etimedout') ||
@@ -87,7 +173,7 @@ export function mapGeminiErrorMessage(err: unknown): {
       status: 403,
       code: 'AI_AUTH_ERROR',
       message:
-        "Clé API Gemini invalide ou non autorisée. Vérifie GEMINI_API_KEY dans les paramètres Secrets.",
+        'Clé API IA invalide ou non autorisée. Vérifie ta clé dans Settings > Secrets.',
     };
   }
   if (lower.includes('resource_exhausted') || lower.includes('429')) {
@@ -95,7 +181,7 @@ export function mapGeminiErrorMessage(err: unknown): {
       status: 429,
       code: 'AI_RATE_LIMIT',
       message:
-        "L'API IA atteint temporairement sa limite de requêtes. Patiente quelques secondes avant de réessayer.",
+        "Limite temporaire de débit atteinte chez le fournisseur IA (HTTP 429). Aucun blocage interne NOVA n'est actif : patiente quelques secondes puis clique sur Réessayer.",
     };
   }
   if (lower.includes('503') || lower.includes('unavailable') || lower.includes('high demand')) {
@@ -103,7 +189,7 @@ export function mapGeminiErrorMessage(err: unknown): {
       status: 503,
       code: 'AI_BUSY',
       message:
-        'Le serveur IA est momentanément saturé. Réessaie dans un court instant.',
+        'Le serveur IA du fournisseur est momentanément saturé. Réessaie dans un court instant.',
     };
   }
   return {
@@ -120,54 +206,96 @@ export function shouldAutoEnableWebSearch(prompt: string): boolean {
   );
 }
 
-const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI PRO, un assistant intelligent professionnel, polyvalent et expert en résolution de problèmes.
+const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI PRO, un assistant et conseiller stratégique francophone de niveau senior.
 
-IDENTITÉ :
-Tu es NOVA AI. Tu aides les utilisateurs à comprendre, créer, améliorer et développer leurs projets, notamment leurs business.
+DOMAINES D'EXPERTISE :
+- Business & Entrepreneuriat : création d'entreprise (micro-entreprise, EURL, SASU, SAS), validation d'offre, business plans, études de marché, tarification, marges et trésorerie.
+- Marketing & Vente : positionnement, acquisition organique et payante, prospection B2B/B2C, tunnels de conversion, rédaction de propositions commerciales, devis, factures conformes et emails professionnels.
+- Technologie & Produit : architecture logicielle, programmation, automatisation, IA, SQL, sécurité et productivité.
+- Analyse de documents, éducation, sciences et synthèse claire.
 
-RÈGLES GÉNÉRALES :
-1. Réponds toujours en français.
-2. Sois professionnel, clair, précis et pédagogique.
-3. Adapte tes explications au niveau de l'utilisateur.
-4. Donne des étapes concrètes et faciles à suivre.
-5. Ne prétends jamais avoir effectué une action que tu n'as pas réalisée.
-6. Ne fabrique jamais de chiffres, de sources, de liens ou de citations.
-7. Signale clairement les incertitudes.
-
-ENTREPRENEURIAT EN FRANCE :
-1. Adapte tes conseils au droit et au marché français.
-2. Ne promets jamais de revenus ou de réussite garantis.
-3. Distingue toujours les faits vérifiés, les estimations et les hypothèses.
-4. Pour toute question juridique, fiscale, sociale ou administrative susceptible d'évoluer, vérifie les informations avec une recherche Web réelle lorsqu'elle est disponible.
-5. Privilégie les sources officielles : formalites.entreprises.gouv.fr, service-public.fr, entreprendre.service-public.fr, urssaf.fr et impots.gouv.fr.
-6. Pour créer une entreprise, indique le Guichet unique officiel : https://formalites.entreprises.gouv.fr/
-7. N'utilise jamais guichet-entreprises.fr comme portail actuel de création d'entreprise.
-8. Ne donne jamais un délai administratif sans avoir vérifié qu'il s'applique précisément à la situation de l'utilisateur.
-9. Ne prétends pas que toutes les entreprises doivent être déclarées dans les 30 jours suivant leur début d'activité.
-10. Distingue la recherche de clients, la signature d'un contrat, l'immatriculation et le début effectif de l'activité.
-11. Ne recommande pas d'attendre systématiquement le premier client ou le premier contrat pour effectuer les formalités.
-12. Ne présente pas la RC Pro comme obligatoire pour toutes les activités. Vérifie les obligations propres au métier.
-13. Ne prétends pas qu'une déclaration doit systématiquement être faite dès le premier euro encaissé. Vérifie les règles et les échéances applicables.
-14. Pour les cotisations sociales, explique les règles selon le statut et la situation.
-15. Ne fabrique jamais de liens, de textes de loi, de délais ou de références officielles.
-16. Fournis les liens des sources réellement consultées.
-17. Si tu ne peux pas vérifier une information, indique clairement : "Information à confirmer auprès d'une source officielle."
-
-
-MÉTHODE DE RÉPONSE :
-1. Comprends l'objectif de l'utilisateur.
-2. Donne d'abord la réponse essentielle.
-3. Organise les explications avec des titres et des listes.
-4. Explique les termes techniques simplement.
-5. Pose une question uniquement si une information essentielle manque.
-
-Ton objectif est de fournir des réponses fiables, utiles, professionnelles et directement applicables.`;
-
-
+RÈGLES DE QUALITÉ, CONTEXTE ET FIABILITÉ :
+1. Exploite pleinement le résumé de contexte et les messages précédents pour maintenir une cohérence parfaite même dans les très longues conversations.
+2. Adapte ton niveau d'explication et tes recommandations au profil et aux moyens de l'utilisateur.
+3. Ne jamais inventer de faits, chiffres, dates, lois, statistiques, citations, informations administratives (SIRET, IBAN, adresse) ou URLs. Si une donnée ne peut pas être vérifiée, indique-le clairement.
+4. Distingue explicitement les faits établis des hypothèses, estimations ou scénarios.
+5. Si l'utilisateur relève une erreur, reconnais-la franchement et corrige-la immédiatement.
+6. Comprends l'intention réelle même si la question est courte, mal formulée ou comporte des fautes.
+7. Réponds en français naturel, précis et directement actionnable.
+8. PRIORITÉ ABSOLUE AU DERNIER MESSAGE : Traite toujours spécifiquement la TOUTE DERNIÈRE demande de l'utilisateur à la fin de l'historique. Utilise les échanges précédents comme contexte utile, mais ne répète jamais une ancienne réponse à la place de la nouvelle question.`;
 
 export interface ChatTurnInput {
   role: 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * Normalizes multi-turn history so:
+ * - Chronological order (oldest -> newest) is strictly preserved.
+ * - Leading assistant turns without a preceding user turn are dropped.
+ * - Adjacent historical turns of the same role are merged to keep strict alternation.
+ * - Trailing unanswered user turns from failed prior requests are excluded so they never
+ *   collide with or hijack the new user prompt.
+ * - The latest user prompt is ALWAYS placed as the exact final 'user' turn.
+ */
+export function buildNormalizedChatMessages(
+  history: ChatTurnInput[],
+  currentUserMessage: string,
+  maxHistoryTurns = 12
+): ChatTurnInput[] {
+  const cleanCurrent = currentUserMessage.trim();
+  const nonEmptyHistory = history
+    .map((turn) => ({
+      role: (turn.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+      content: String(turn.content ?? '').trim().slice(0, 6000),
+    }))
+    .filter((turn) => turn.content.length > 0);
+
+  let windowStart = Math.max(0, nonEmptyHistory.length - maxHistoryTurns);
+  if (
+    windowStart > 0 &&
+    nonEmptyHistory[windowStart]?.role === 'assistant' &&
+    nonEmptyHistory[windowStart - 1]?.role === 'user'
+  ) {
+    windowStart -= 1;
+  }
+
+  let sliced = nonEmptyHistory.slice(windowStart);
+  while (sliced.length > 0 && sliced[0]?.role !== 'user') {
+    sliced = sliced.slice(1);
+  }
+
+  const normalizedHistory: ChatTurnInput[] = [];
+  for (const turn of sliced) {
+    const prev = normalizedHistory[normalizedHistory.length - 1];
+    if (prev && prev.role === turn.role) {
+      prev.content = `${prev.content}\n\n${turn.content}`.slice(0, 6000);
+    } else {
+      normalizedHistory.push({ role: turn.role, content: turn.content });
+    }
+  }
+
+  while (
+    normalizedHistory.length > 0 &&
+    normalizedHistory[normalizedHistory.length - 1]?.role === 'user'
+  ) {
+    normalizedHistory.pop();
+  }
+
+  return [...normalizedHistory, { role: 'user', content: cleanCurrent }];
+}
+
+export function buildNormalizedGeminiContents(
+  history: ChatTurnInput[],
+  currentUserMessage: string,
+  maxHistoryTurns = 12
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  return buildNormalizedChatMessages(history, currentUserMessage, maxHistoryTurns).map(
+    (turn) => ({
+      role: (turn.role === 'assistant' ? 'model' : 'user') as 'user' | 'model',
+      parts: [{ text: turn.content }],
+    })
+  );
 }
 
 export interface StreamCallbacks {
@@ -183,7 +311,46 @@ export interface StreamResult {
   latencyMs: number;
 }
 
-async function streamOnceWithModel(params: {
+/**
+ * Summarize older messages when a conversation becomes long so token usage stays
+ * optimized without silently losing historical facts or user constraints.
+ */
+export async function summarizeConversationHistory(params: {
+  existingSummary: string;
+  turnsToSummarize: ChatTurnInput[];
+}): Promise<string | null> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey || params.turnsToSummarize.length === 0) return null;
+
+  try {
+    const ai = getClient(apiKey);
+    const transcript = params.turnsToSummarize
+      .map((t) => `${t.role === 'user' ? 'Utilisateur' : 'NOVA'}: ${t.content.slice(0, 1200)}`)
+      .join('\n\n');
+
+    const prompt = [
+      params.existingSummary
+        ? `Résumé précédent à mettre à jour :\n${params.existingSummary}\n\n`
+        : '',
+      `Nouveaux échanges à intégrer dans le résumé :\n${transcript}\n\n`,
+      `Produis un résumé factuel et concis en français (maximum 180 mots) retenant uniquement : objectifs de l'utilisateur, contraintes, décisions prises, préférences techniques/business et chiffres cités.`,
+    ].join('');
+
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODELS.fallback,
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+      },
+    });
+    const text = response.text?.trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+async function streamOnceWithGeminiModel(params: {
   ai: GoogleGenAI;
   model: string;
   contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
@@ -290,35 +457,50 @@ async function streamOnceWithModel(params: {
   }
 }
 
-async function runWithResilientFallback(params: {
+async function runWithResilientGeminiFallback(params: {
   ai: GoogleGenAI;
   contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
   systemInstruction: string;
   useWebSearch: boolean;
+  preferredModel?: string;
   externalSignal?: AbortSignal;
   callbacks: StreamCallbacks;
   startedAt: number;
 }): Promise<StreamResult> {
-  const tryOrder: Array<{ model: string; ttftMs: number; label: string }> = isPrimaryHealthy()
-    ? [
-        {
-          model: GEMINI_MODELS.primary,
-          ttftMs: TTFT_PRIMARY_MS,
-          label: 'NOVA réfléchit...',
-        },
-        {
-          model: GEMINI_MODELS.fallback,
-          ttftMs: TTFT_FALLBACK_MS,
-          label: 'Reconnexion automatique sur le moteur rapide...',
-        },
-      ]
-    : [
-        {
-          model: GEMINI_MODELS.fallback,
-          ttftMs: TTFT_FALLBACK_MS,
-          label: 'NOVA réfléchit...',
-        },
-      ];
+  const validPreferred =
+    params.preferredModel === GEMINI_MODELS.fallback
+      ? GEMINI_MODELS.fallback
+      : GEMINI_MODELS.primary;
+
+  const tryOrder: Array<{ model: string; ttftMs: number; label: string }> =
+    validPreferred === GEMINI_MODELS.fallback
+      ? [
+          {
+            model: GEMINI_MODELS.fallback,
+            ttftMs: TTFT_FALLBACK_MS,
+            label: 'NOVA réfléchit...',
+          },
+        ]
+      : isPrimaryHealthy()
+      ? [
+          {
+            model: GEMINI_MODELS.primary,
+            ttftMs: TTFT_PRIMARY_MS,
+            label: 'NOVA réfléchit...',
+          },
+          {
+            model: GEMINI_MODELS.fallback,
+            ttftMs: TTFT_FALLBACK_MS,
+            label: 'Bascule automatique vers Gemini Flash Lite...',
+          },
+        ]
+      : [
+          {
+            model: GEMINI_MODELS.fallback,
+            ttftMs: TTFT_FALLBACK_MS,
+            label: 'NOVA réfléchit...',
+          },
+        ];
 
   let lastError: unknown;
   let emittedAnyDelta = false;
@@ -327,7 +509,6 @@ async function runWithResilientFallback(params: {
     const candidate = tryOrder[i];
     if (!candidate) continue;
 
-    // Up to 2 quick attempts on the fallback candidate if a transient glitch happens before first token
     const maxAttempts = i === tryOrder.length - 1 ? 2 : 1;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
@@ -335,7 +516,7 @@ async function runWithResilientFallback(params: {
           params.callbacks.onStatus?.(candidate.label);
         }
         params.callbacks.onModelSelected?.(candidate.model);
-        const res = await streamOnceWithModel({
+        const res = await streamOnceWithGeminiModel({
           ai: params.ai,
           model: candidate.model,
           contents: params.contents,
@@ -361,10 +542,14 @@ async function runWithResilientFallback(params: {
         if (rawMsg === 'CLIENT_ABORTED') {
           throw err;
         }
+        const is429 = rawMsg.toLowerCase().includes('429') || rawMsg.toLowerCase().includes('resource_exhausted');
+        // Never loop on 429 to bypass provider limits; allow at most single fallback to a different healthy model if no deltas emitted
         const canRecover =
-          !emittedAnyDelta && (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'));
+          !emittedAnyDelta &&
+          !is429 &&
+          (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'));
         if (canRecover && attempt + 1 < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, 350));
+          await new Promise((resolve) => setTimeout(resolve, 300));
           continue;
         }
         if (canRecover && i < tryOrder.length - 1) {
@@ -381,70 +566,267 @@ async function runWithResilientFallback(params: {
   throw lastError;
 }
 
+async function streamOpenAICompatibleProvider(params: {
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  systemInstruction: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  externalSignal?: AbortSignal;
+  callbacks: StreamCallbacks;
+  startedAt: number;
+}): Promise<StreamResult> {
+  params.callbacks.onModelSelected?.(params.model);
+  const res = await fetch(params.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${params.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: params.model,
+      stream: true,
+      messages: [
+        { role: 'system', content: params.systemInstruction },
+        ...params.messages.map((m) => ({ role: m.role, content: m.content })),
+      ],
+    }),
+    signal: params.externalSignal,
+  });
+
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status} ${errText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const json = JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+        };
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) {
+          fullText += delta;
+          params.callbacks.onDelta(delta);
+        }
+      } catch {
+        // ignore partial chunk
+      }
+    }
+  }
+
+  if (!fullText.trim()) {
+    throw new Error('EMPTY_MODEL_RESPONSE');
+  }
+
+  return {
+    fullText,
+    sources: [],
+    modelUsed: params.model,
+    latencyMs: Date.now() - params.startedAt,
+  };
+}
+
+async function streamAnthropicProvider(params: {
+  apiKey: string;
+  model: string;
+  systemInstruction: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  externalSignal?: AbortSignal;
+  callbacks: StreamCallbacks;
+  startedAt: number;
+}): Promise<StreamResult> {
+  params.callbacks.onModelSelected?.(params.model);
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': params.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: params.model,
+      max_tokens: 4096,
+      stream: true,
+      system: params.systemInstruction,
+      messages: params.messages.map((m) => ({ role: m.role, content: m.content })),
+    }),
+    signal: params.externalSignal,
+  });
+
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status} ${errText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload) continue;
+      try {
+        const json = JSON.parse(payload) as {
+          type?: string;
+          delta?: { type?: string; text?: string };
+        };
+        if (json.type === 'content_block_delta' && json.delta?.text) {
+          fullText += json.delta.text;
+          params.callbacks.onDelta(json.delta.text);
+        }
+      } catch {
+        // ignore partial chunk
+      }
+    }
+  }
+
+  if (!fullText.trim()) {
+    throw new Error('EMPTY_MODEL_RESPONSE');
+  }
+
+  return {
+    fullText,
+    sources: [],
+    modelUsed: params.model,
+    latencyMs: Date.now() - params.startedAt,
+  };
+}
+
 export async function streamConversationResponse(params: {
   history: ChatTurnInput[];
+  contextSummary?: string;
   userMessage: string;
   attachment?: { name: string; content: string } | null;
   useWebSearch: boolean;
+  provider?: AIProviderId;
+  model?: string;
   plan: PlanTier;
   externalSignal?: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<StreamResult> {
-  const apiKey = getGeminiApiKey();
+  const provider: AIProviderId = params.provider ?? 'gemini';
+  const apiKey = getProviderApiKey(provider);
   if (!apiKey) {
     throw new Error(
-      'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Configure-la dans Settings > Secrets.'
+      `Le fournisseur IA "${provider}" n'est pas configuré côté serveur. Configure sa clé API dans Settings > Secrets ou utilise Google Gemini.`
     );
   }
 
   const startedAt = Date.now();
-  const ai = getClient(apiKey);
-
-  // Keep bounded recent conversation context for high relevance & low latency (last 14 turns)
-  const boundedHistory = params.history.slice(-14).map((turn) => ({
-    role: (turn.role === 'assistant' ? 'model' : 'user') as 'user' | 'model',
-    parts: [{ text: turn.content.slice(0, 4500) }],
-  }));
+  const systemInstruction = params.contextSummary
+    ? `${GENERAL_SYSTEM_INSTRUCTION}\n\n[RÉSUMÉ DU CONTEXTE ANTÉRIEUR DE LA CONVERSATION]\n${params.contextSummary}`
+    : GENERAL_SYSTEM_INSTRUCTION;
 
   const finalUserPrompt = params.attachment
     ? `[Document joint : ${params.attachment.name}]\n\nContenu du document :\n"""\n${params.attachment.content}\n"""\n\nDemande de l'utilisateur :\n${params.userMessage}`
     : params.userMessage;
 
-  const contents = [
-    ...boundedHistory,
-    { role: 'user' as const, parts: [{ text: finalUserPrompt }] },
-  ];
+  const normalizedMessages = buildNormalizedChatMessages(
+    params.history,
+    finalUserPrompt,
+    12
+  );
+
+  if (provider === 'openai') {
+    return streamOpenAICompatibleProvider({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      apiKey,
+      model: params.model || 'gpt-4o-mini',
+      systemInstruction,
+      messages: normalizedMessages,
+      externalSignal: params.externalSignal,
+      callbacks: params.callbacks,
+      startedAt,
+    });
+  }
+
+  if (provider === 'mistral') {
+    return streamOpenAICompatibleProvider({
+      endpoint: 'https://api.mistral.ai/v1/chat/completions',
+      apiKey,
+      model: params.model || 'mistral-small-latest',
+      systemInstruction,
+      messages: normalizedMessages,
+      externalSignal: params.externalSignal,
+      callbacks: params.callbacks,
+      startedAt,
+    });
+  }
+
+  if (provider === 'anthropic') {
+    return streamAnthropicProvider({
+      apiKey,
+      model: params.model || 'claude-3-5-haiku-latest',
+      systemInstruction,
+      messages: normalizedMessages,
+      externalSignal: params.externalSignal,
+      callbacks: params.callbacks,
+      startedAt,
+    });
+  }
+
+  const ai = getClient(apiKey);
+  const contents = buildNormalizedGeminiContents(params.history, finalUserPrompt, 12);
 
   const enableSearch = params.useWebSearch || shouldAutoEnableWebSearch(params.userMessage);
 
-  return runWithResilientFallback({
+  return runWithResilientGeminiFallback({
     ai,
     contents,
-    systemInstruction: GENERAL_SYSTEM_INSTRUCTION,
+    systemInstruction,
     useWebSearch: enableSearch,
+    preferredModel: params.model,
     externalSignal: params.externalSignal,
     callbacks: params.callbacks,
     startedAt,
   });
 }
 
+// 18 Requested Business Modules
 export const BUSINESS_MODULE_LABELS: Record<string, string> = {
-  business_ideas: "Génération d'idées de business rentables et réalistes",
-  zero_budget: 'Création de business avec 0 € de budget initial',
-  business_plan: 'Rédaction de Business Plan complet',
-  find_clients: 'Stratégie de prospection et acquisition de clients',
-  marketing_strategy: 'Stratégie marketing & positionnement multicanal',
-  brand_creation: 'Création de marque, identité et offre différenciante',
-  ecommerce_store: 'Création et lancement de boutique en ligne (e-commerce)',
-  competitor_analysis: 'Analyse concurrentielle et avantages comparatifs',
-  costs_margins: 'Structuration des coûts, pricing et marges nettes',
-  sales_strategy: 'Tunnel de conversion et stratégie de vente',
-  low_budget_growth: 'Croissance organique à petit budget',
-  action_plan: "Plan d'exécution opérationnel étape par étape",
-  commercial_proposal: 'Rédaction de proposition commerciale & devis structuré',
-  invoice_billing: 'Modèle de facture professionnelle, conditions & relance client',
-  professional_texts: 'Textes professionnels, emails B2B et argumentaires commerciaux',
-  company_creation: "Accompagnement complet création d'entreprise & étude de marché",
+  business_ideas: 'Idées de business rentables et réalistes',
+  zero_budget: 'Création de business avec 0 €',
+  business_plan: 'Business plan complet',
+  market_study: 'Étude de marché structurée',
+  competitor_analysis: 'Analyse concurrentielle',
+  company_creation: "Création d'entreprise complète",
+  find_clients: 'Recherche de clients & prospection',
+  marketing_strategy: 'Stratégie marketing multicanal',
+  brand_creation: 'Branding & identité de marque',
+  ecommerce_store: 'Boutique en ligne & e-commerce',
+  sales_strategy: 'Stratégie commerciale & closing',
+  costs_margins: 'Calcul des coûts, pricing et marges',
+  quote_creation: 'Création de devis professionnels',
+  invoice_billing: 'Factures conformes & relances',
+  professional_texts: 'Emails professionnels & argumentaires',
+  action_plan: "Plans d'action opérationnels",
+  automation_ops: "Automatisation des tâches & workflows",
+  low_budget_growth: "Croissance d'entreprise & passage à l'échelle",
 };
 
 const EXPERIENCE_LEVEL_LABELS: Record<ExperienceLevel, string> = {
@@ -457,7 +839,7 @@ const EXPERIENCE_LEVEL_LABELS: Record<ExperienceLevel, string> = {
 };
 
 const DOCUMENT_MODULES = new Set([
-  'commercial_proposal',
+  'quote_creation',
   'invoice_billing',
   'professional_texts',
 ]);
@@ -468,6 +850,8 @@ export async function streamBusinessProject(params: {
   sector: string;
   budgetEur: number;
   goal: string;
+  skills?: string;
+  weeklyHours?: number;
   experienceLevel?: ExperienceLevel;
   contextDetails?: string;
   useWebSearch: boolean;
@@ -492,115 +876,46 @@ export async function streamBusinessProject(params: {
   const levelDescription = EXPERIENCE_LEVEL_LABELS[levelKey];
   const isDocumentModule = DOCUMENT_MODULES.has(params.moduleKey);
 
-const systemInstruction = `Tu es NOVA AI Mode Business, un consultant expert en entrepreneuriat, stratégie commerciale, marketing, gestion, finance et création d'entreprise en France.
-
-TA MISSION :
-Transformer les idées de l'utilisateur en projets concrets, réalistes et réalisables. Tu accompagnes aussi bien les débutants que les entrepreneurs expérimentés.
+  const systemInstruction = `Tu es NOVA AI PRO Mode Business, un consultant senior en entrepreneuriat, finance d'entreprise, marketing, automatisation et stratégie commerciale.
 
 RÈGLES OBLIGATOIRES :
+1. Sois réaliste, concret, chiffré et honnête. Ne garantis JAMAIS de revenus ni de promesses de richesse.
+2. Adapte précisément tes recommandations au budget déclaré (${params.budgetEur} €), au temps disponible${params.weeklyHours ? ` (${params.weeklyHours}h/semaine)` : ''}, aux compétences déclarées et au niveau de l'utilisateur (${levelDescription}).
+3. Ne jamais inventer d'informations administratives ou bancaires (SIRET, IBAN, adresse) : utilise [À COMPLÉTER] si nécessaire.
+4. Structure ta réponse en Markdown clair avec ces sections obligatoires :
+## 1. Idée & Objectif stratégique
+## 2. Client cible & Offre (Prix & Positionnement)
+## 3. Budget nécessaire & Coûts détaillés
+## 4. Outils & Ressources nécessaires
+## 5. Acquisition clients & Stratégie de lancement
+## 6. Risques & Scénarios réalistes (sans garantie de revenus)
+## 7. Plan d'action concret (7 jours · 30 jours · 90 jours)
 
-1. ADAPTATION PERSONNALISÉE
-- Adapte tes explications au budget (${params.budgetEur} €), au niveau (${levelDescription}) et à l'objectif de l'utilisateur.
-- Si l'utilisateur débute, explique simplement les termes techniques.
-- Ne suppose jamais qu'il possède déjà une entreprise, un site, des clients ou des compétences particulières.
-- Si une information essentielle manque, indique ton hypothèse ou demande une seule précision.
-
-2. RÉALISME FINANCIER
-- Ne promets jamais de richesse, de chiffre d'affaires ou de revenus garantis.
-- Respecte strictement le budget déclaré (${params.budgetEur} €).
-- Pour un budget de 0 €, propose uniquement des solutions réellement accessibles gratuitement pour démarrer.
-- Distingue les coûts obligatoires, facultatifs et les éventuels frais futurs.
-- Distingue chiffre d'affaires, bénéfice et revenu réellement disponible.
-- Présente les estimations comme des hypothèses, avec leurs conditions et limites.
-
-3. FIABILITÉ ET INFORMATIONS FRANÇAISES
-- Pour les démarches administratives, fiscales, sociales et juridiques en France, privilégie les sources officielles : service-public.fr, entreprendre.service-public.fr, formalites.entreprises.gouv.fr, impots.gouv.fr, urssaf.fr et cnil.fr.
-- Si la recherche Web est disponible, vérifie les informations susceptibles d'avoir changé et cite les sources consultées.
-- N'invente jamais de règle, de tarif, de délai, de formulaire ou d'obligation.
-- Précise quand une information doit être confirmée auprès d'un organisme officiel ou d'un professionnel.
-- Ne présente pas une assurance, une inscription ou une démarche comme obligatoire dans tous les cas si cela dépend de l'activité ou du statut.
-- Pour les sujets juridiques ou fiscaux complexes, donne une explication générale et recommande une vérification adaptée.
-
-4. STRATÉGIE ET EXÉCUTION
-- Propose des actions réalisables, classées par priorité.
-- Précise les outils, leur utilité et les limites éventuelles de leurs versions gratuites.
-- Distingue les tâches réalisables par un débutant de celles qui demandent une compétence ou un professionnel.
-- Pour chaque étape importante, indique le résultat attendu.
-- Ne recommande pas de dépenses avant d'avoir expliqué pourquoi elles sont utiles.
-
-5. STRUCTURE OBLIGATOIRE
-Chaque étude doit contenir ces 7 sections exactes, dans cet ordre :
-
-## 1. L'objectif
-Explique le projet, le besoin auquel il répond et le résultat recherché.
-
-## 2. Le budget nécessaire
-Présente les coûts estimés, les solutions gratuites et les frais à anticiper. Respecte le budget déclaré.
-
-## 3. Les outils nécessaires
-Donne les outils utiles, leur fonction et leurs éventuelles limites gratuites.
-
-## 4. Les étapes de réalisation
-Décris les étapes dans l'ordre, avec des instructions concrètes et adaptées au niveau de l'utilisateur.
-
-## 5. Les risques
-Présente les risques commerciaux, financiers, techniques, juridiques et les moyens de les limiter.
-
-## 6. Les possibilités de revenus
-Présente des hypothèses prudentes et des scénarios réalistes, en expliquant les conditions nécessaires. Aucun gain n'est garanti. Ne fabrique pas de chiffres présentés comme des certitudes.
-
-## 7. Un plan d'action concret
-Donne les premières actions à effectuer, dans l'ordre, avec des objectifs mesurables et des résultats attendus.
-
-6. MODULES DE RÉDACTION COMMERCIALE
 ${
   isDocumentModule
-    ? `Pour ce module, ajoute dans la section 7 un modèle complet, professionnel et prêt à copier puis adapter : proposition commerciale, facture, email B2B ou autre document demandé. Pour les factures françaises, ne fabrique aucune information d'entreprise. Prévois les champs à compléter et les mentions applicables selon la situation, notamment SIRET, TVA, échéance et conditions de paiement. Signale que les mentions doivent être vérifiées selon le statut et la situation du vendeur.`
-    : `Si l'utilisateur demande un document commercial, fournis un exemple exploitable et adapté à sa demande, sans inventer de données personnelles ou d'entreprise.`
+    ? `Inclus dans la section 7 un modèle complet prêt à copier/adapter (devis, facture avec mentions légales françaises type SIRET/TVA [À COMPLÉTER], ou séquence d'emails B2B professionnelles).`
+    : ''
 }
+5. Réponds exclusivement en français professionnel, directement exploitable.`;
 
-7. QUALITÉ DE RÉPONSE
-- Réponds exclusivement en français professionnel, clair et naturel.
-- Évite les longues introductions et les répétitions.
-- Utilise des tableaux uniquement lorsqu'ils facilitent la comparaison.
-- Ne prétends jamais avoir effectué une démarche, un paiement ou une vérification que tu n'as pas réellement effectuée.
-- Termine par la prochaine action la plus utile pour faire avancer le projet.
-8. PROTECTION CONTRE LES CONSEILS TROMPEURS
-- Ne donne jamais un taux de cotisations sociales unique pour toutes les micro-entreprises. Vérifie le taux applicable à l'activité et à la période.
-- Ne présente jamais une simple autorisation écrite comme une garantie de conformité au RGPD. Explique les obligations de sécurité, de confidentialité, de limitation des accès et de protection des données.
-- N'annonce jamais un gain de temps, une économie ou un résultat commercial comme un fait sans mesure vérifiable.
-- Dans les modèles de prospection, n'invente jamais de client, de témoignage, de résultat ou de référence commerciale.
-- Distingue toujours un exemple fictif d'une expérience réellement réalisée.
-- Avant de recommander une automatisation, explique les limites, les risques d'erreur et la nécessité d'une validation humaine lorsque cela est pertinent.
-9. FIABILITÉ PROFESSIONNELLE RENFORCÉE
-
-- Distingue la préparation d'un projet, la prospection, la signature d'un contrat, les formalités de création et le début effectif de l'activité.
-- Ne présente jamais la signature d'un contrat ou le premier encaissement comme un déclencheur universel des formalités.
-- Explique que les formalités doivent être effectuées au moment requis selon l'activité et le statut. Invite à vérifier le calendrier applicable auprès d'une source officielle.
-- Ne recommande jamais systématiquement la micro-entreprise : compare les options adaptées au projet.
-- Ne conseille pas de commencer une activité rémunérée sans avoir vérifié les formalités nécessaires.
-- Si une recherche Web réelle n'est pas activée, ne prétends pas avoir vérifié les règles actuelles.
-- Pour chaque idée de business, précise le client cible, le problème résolu, l'offre, le prix envisagé, les coûts et la méthode pour trouver des clients.
-- Présente les estimations comme des hypothèses et explique les conditions nécessaires pour les atteindre.`;
-
-
-  
   const prompt = [
     `Module demandé : ${moduleLabel}`,
     `Titre du projet / document : ${params.projectTitle}`,
     `Secteur / Marché : ${params.sector}`,
     `Budget disponible : ${params.budgetEur} €`,
-    `Niveau de l'utilisateur : ${levelDescription}`,
+    params.skills ? `Compétences disponibles : ${params.skills}` : '',
+    params.weeklyHours ? `Temps disponible par semaine : ${params.weeklyHours} heures` : '',
+    `Niveau d'expérience : ${levelDescription}`,
     `Objectif principal : ${params.goal}`,
     params.contextDetails ? `Précisions complémentaires : ${params.contextDetails}` : '',
-    `Génère l'étude complète et actionnable en suivant strictement les 7 sections obligatoires.`,
+    `Génère le livrable complet en suivant strictement les 7 sections et en incluant le plan 7, 30 et 90 jours.`,
   ]
     .filter(Boolean)
     .join('\n');
 
   const contents = [{ role: 'user' as const, parts: [{ text: prompt }] }];
 
-  return runWithResilientFallback({
+  return runWithResilientGeminiFallback({
     ai,
     contents,
     systemInstruction,
@@ -609,4 +924,567 @@ ${
     callbacks: params.callbacks,
     startedAt,
   });
+}
+
+/**
+ * Sanitize generated SVG strictly to ensure safe rasterization to PNG
+ * and prevent XSS or external network calls inside SVG.
+ */
+export function sanitizeSvgLogo(rawSvg: string, fallbackName: string, primaryHex: string): string {
+  const cleaned = rawSvg
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/on\w+\s*=\s*(['"])[\s\S]*?\1/gi, '')
+    .replace(/javascript:/gi, '')
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
+    .trim();
+
+  const svgMatch = cleaned.match(/<svg[\s\S]*<\/svg>/i);
+  if (svgMatch && svgMatch[0].includes('<path') || (svgMatch && svgMatch[0].includes('<circle')) || (svgMatch && svgMatch[0].includes('<rect')) || (svgMatch && svgMatch[0].includes('<polygon'))) {
+    let svg = svgMatch[0];
+    if (!/xmlns=/.test(svg)) {
+      svg = svg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    if (!/viewBox=/.test(svg)) {
+      svg = svg.replace('<svg', '<svg viewBox="0 0 512 512"');
+    }
+    return svg;
+  }
+
+  // Deterministic geometric vector fallback ONLY if model returned invalid markup
+  const initials = fallbackName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('') || 'NV';
+  const safeColor = /^#[0-9A-Fa-f]{6}$/.test(primaryHex) ? primaryHex : '#3B82F6';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="novaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${safeColor}" />
+      <stop offset="100%" stop-color="#7C3AED" />
+    </linearGradient>
+  </defs>
+  <rect x="36" y="36" width="440" height="440" rx="96" fill="url(#novaGrad)" />
+  <circle cx="256" cy="256" r="154" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="10" />
+  <text x="256" y="286" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="144" fill="#FFFFFF" letter-spacing="4">${initials}</text>
+</svg>`;
+}
+
+function sanitizeWebsiteHtml(rawHtml: string): string {
+  let html = rawHtml.trim();
+  const fenced = html.match(/```(?:html)?\s*([\s\S]*?)```/i);
+  if (fenced && fenced[1]) {
+    html = fenced[1].trim();
+  }
+  if (!/<html/i.test(html)) {
+    html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${html}</body></html>`;
+  }
+  return html;
+}
+
+/**
+ * Generates real structured artifacts for Company Creation:
+ * 1. Brand Identity (name, slogan, hex colors, typography, visual rules)
+ * 2. Real vector SVG Logo (rasterizable to high-res PNG)
+ * 3. Commercial Offer (services, 3 pricing tiers, pitch)
+ * 4. Business Plan (financial plan, marketing strategy, 7/30/90 days client acquisition)
+ * 5. Real standalone responsive HTML/CSS/JS website
+ */
+export async function generateCompanyCreationSuite(params: {
+  projectTitle: string;
+  sector: string;
+  budgetEur: number;
+  goal: string;
+  skills?: string;
+  weeklyHours?: number;
+  experienceLevel?: ExperienceLevel;
+  contextDetails?: string;
+}): Promise<{ suite: CompanyCreationResult; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error(
+      'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Configure-la dans Settings > Secrets.'
+    );
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+
+  const prompt = `Tu es un studio complet de création d'entreprise (Brand Designer, Directeur Artistique SVG, Stratège Commercial, Expert Business Plan et Développeur Web Frontend).
+
+Crée un dossier réel et complet en français pour lancer cette entreprise :
+- Nom / Idée : ${params.projectTitle}
+- Secteur : ${params.sector}
+- Budget initial : ${params.budgetEur} €
+- Objectif : ${params.goal}
+- Compétences : ${params.skills || 'Non précisées'}
+- Temps disponible : ${params.weeklyHours ? `${params.weeklyHours}h / semaine` : 'Non précisé'}
+- Niveau : ${params.experienceLevel || 'debutant'}
+- Précisions : ${params.contextDetails || 'Aucune'}
+
+EXIGENCES STRICTES :
+1. brandIdentity :
+   - Crée un nom de marque mémorable, un slogan percutant, le positionnement, le ton éditorial, le public cible.
+   - Palette de 5 couleurs hexadécimales valides (#RRGGBB) harmonieuses adaptées au secteur.
+   - Typographie Google Fonts réelle (displayFont et bodyFont, ex: "Plus Jakarta Sans", "Bricolage Grotesque", "Outfit", "DM Sans", "Playfair Display").
+2. logoSvg :
+   - Génère un VÉRITABLE logo vectoriel SVG complet (<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">...</svg>).
+   - Utilise des formes géométriques propres (<path>, <circle>, <rect>, <polygon>, <linearGradient>) formant un emblème de marque moderne, équilibré et centré dans 512x512, avec fond transparent ou badge intégré élégant. Aucun script ni image externe.
+3. commercialOffer :
+   - Offre claire avec 3 formules tarifaires réalistes (ex: Essentiel, Pro/Standard, Premium) adaptées au marché, avec livrables concrets et délais.
+4. businessPlan :
+   - Plan financier réaliste basé sur le budget de ${params.budgetEur} €, coûts de démarrage chiffrés, charges mensuelles fixes, prix unitaire, coût variable, seuil de rentabilité cohérent mathématiquement, note prudente précisant explicitement qu'aucun revenu n'est garanti.
+   - Stratégie marketing actionnable et plan concret d'acquisition des premiers clients sur 7, 30 et 90 jours.
+5. websiteHtml :
+   - Code HTML5 complet autonome (<!doctype html>...) avec CSS moderne embarqué dans <style>, polices Google Fonts, design responsive (mobile + desktop), navigation fluide, section Hero avec nom & slogan, section Services & Tarifs reprenant les 3 offres, section À propos / Méthode, formulaire de contact fonctionnel côté client (sans rechargement de page, avec message de confirmation visuel), et footer. Utilise les couleurs exactes de brandIdentity.`;
+
+  const callGenerate = async (targetModel: string) =>
+    ai.models.generateContent({
+      model: targetModel,
+      contents: prompt,
+      config: {
+        thinkingConfig: {
+          thinkingLevel:
+            targetModel === GEMINI_MODELS.fallback
+              ? ThinkingLevel.MINIMAL
+              : ThinkingLevel.LOW,
+        },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            brandIdentity: {
+              type: Type.OBJECT,
+              properties: {
+                brandName: { type: Type.STRING },
+                slogan: { type: Type.STRING },
+                positioning: { type: Type.STRING },
+                toneOfVoice: { type: Type.STRING },
+                targetAudience: { type: Type.STRING },
+                colors: {
+                  type: Type.OBJECT,
+                  properties: {
+                    primary: { type: Type.STRING },
+                    secondary: { type: Type.STRING },
+                    accent: { type: Type.STRING },
+                    background: { type: Type.STRING },
+                    text: { type: Type.STRING },
+                  },
+                },
+                typography: {
+                  type: Type.OBJECT,
+                  properties: {
+                    displayFont: { type: Type.STRING },
+                    bodyFont: { type: Type.STRING },
+                    rationale: { type: Type.STRING },
+                  },
+                },
+                visualGuidelines: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+            },
+            logoSvg: { type: Type.STRING },
+            commercialOffer: {
+              type: Type.OBJECT,
+              properties: {
+                headline: { type: Type.STRING },
+                valueProposition: { type: Type.STRING },
+                packages: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING },
+                      priceLabel: { type: Type.STRING },
+                      targetClient: { type: Type.STRING },
+                      deliverables: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                      },
+                      timeline: { type: Type.STRING },
+                    },
+                  },
+                },
+                salesPitch: { type: Type.STRING },
+              },
+            },
+            businessPlan: {
+              type: Type.OBJECT,
+              properties: {
+                executiveSummary: { type: Type.STRING },
+                financialPlan: {
+                  type: Type.OBJECT,
+                  properties: {
+                    startupCostsEur: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          item: { type: Type.STRING },
+                          amountEur: { type: Type.NUMBER },
+                        },
+                      },
+                    },
+                    monthlyFixedCostsEur: { type: Type.NUMBER },
+                    unitPriceEur: { type: Type.NUMBER },
+                    unitVariableCostEur: { type: Type.NUMBER },
+                    breakEvenClientsPerMonth: { type: Type.NUMBER },
+                    prudentScenarioNote: { type: Type.STRING },
+                  },
+                },
+                marketingStrategy: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                firstClientsPlan: {
+                  type: Type.OBJECT,
+                  properties: {
+                    days7: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    days30: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    days90: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                },
+                keyRisks: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+            },
+            websiteHtml: { type: Type.STRING },
+          },
+        },
+      },
+    });
+
+  let response;
+  let usedModel: string = model;
+  try {
+    response = await callGenerate(model);
+  } catch (err) {
+    if (model === GEMINI_MODELS.primary && isTransientError(err)) {
+      tripPrimaryCooldown(err);
+      usedModel = GEMINI_MODELS.fallback;
+      response = await callGenerate(GEMINI_MODELS.fallback);
+    } else {
+      throw err;
+    }
+  }
+
+  const rawText = response.text?.trim();
+  if (!rawText) {
+    throw new Error("Le moteur IA n'a renvoyé aucune donnée structurée.");
+  }
+
+  const parsed = JSON.parse(rawText) as CompanyCreationResult;
+  const brandName = parsed.brandIdentity?.brandName?.trim() || params.projectTitle;
+  const primaryHex = parsed.brandIdentity?.colors?.primary || '#3B82F6';
+
+  const cleanSvg = sanitizeSvgLogo(parsed.logoSvg || '', brandName, primaryHex);
+  let cleanHtml = sanitizeWebsiteHtml(parsed.websiteHtml || '');
+
+  // Inject the real SVG logo cleanly into website if it lacks an <svg> brand mark
+  if (cleanHtml && !/<svg[\s\S]*<\/svg>/i.test(cleanHtml)) {
+    cleanHtml = cleanHtml.replace(
+      /<header([^>]*)>/i,
+      `<header$1><div style="display:inline-flex;align-items:center;gap:10px;"><span style="display:inline-block;width:36px;height:36px;">${cleanSvg}</span></div>`
+    );
+  }
+
+  return {
+    suite: {
+      ...parsed,
+      logoSvg: cleanSvg,
+      websiteHtml: cleanHtml,
+    },
+    modelUsed: usedModel,
+  };
+}
+
+export async function generateLogoSvgOnly(params: {
+  brandName: string;
+  sector: string;
+  primaryColor: string;
+  secondaryColor: string;
+  styleHint?: string;
+}): Promise<{ logoSvg: string; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Clé API Gemini manquante côté serveur (GEMINI_API_KEY).');
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+
+  const prompt = `Crée un logo vectoriel SVG minimaliste, moderne et mémorable pour la marque "${params.brandName}" (secteur : ${params.sector}).
+Couleurs : primaire ${params.primaryColor}, secondaire ${params.secondaryColor}.
+Style demandé : ${params.styleHint || 'Emblème géométrique épuré de niveau studio design'}.
+Retourne uniquement un JSON avec la propriété "logoSvg" contenant un SVG valide viewBox="0 0 512 512" (sans script, sans lien externe, géométrie nette et équilibrée).`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          logoSvg: { type: Type.STRING },
+        },
+      },
+    },
+  });
+
+  const parsed = JSON.parse((response.text || '{}').trim()) as { logoSvg?: string };
+  return {
+    logoSvg: sanitizeSvgLogo(parsed.logoSvg || '', params.brandName, params.primaryColor),
+    modelUsed: model,
+  };
+}
+
+export async function regenerateWebsiteHtmlOnly(params: {
+  brandName: string;
+  slogan: string;
+  sector: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  packagesText: string;
+  logoSvg: string;
+  customInstructions?: string;
+}): Promise<{ websiteHtml: string; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Clé API Gemini manquante côté serveur (GEMINI_API_KEY).');
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+
+  const prompt = `Développe une page web HTML5 complète, autonome, responsive et professionnelle en français pour :
+- Marque : ${params.brandName}
+- Slogan : ${params.slogan}
+- Secteur : ${params.sector}
+- Palette : Primaire ${params.primaryColor}, Secondaire ${params.secondaryColor}, Accent ${params.accentColor}
+- Offres & tarifs : ${params.packagesText}
+- Directives spécifiques : ${params.customInstructions || 'Design épuré, sections Hero, Services/Tarifs, Méthode, Preuve/Engagements, Formulaire de contact interactif avec confirmation JS, Footer.'}
+
+Retourne un JSON { "websiteHtml": "<!doctype html>..." }.`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          websiteHtml: { type: Type.STRING },
+        },
+      },
+    },
+  });
+
+  const parsed = JSON.parse((response.text || '{}').trim()) as { websiteHtml?: string };
+  let html = sanitizeWebsiteHtml(parsed.websiteHtml || '');
+  if (params.logoSvg && !/<svg[\s\S]*<\/svg>/i.test(html)) {
+    html = html.replace(
+      /<body([^>]*)>/i,
+      `<body$1><div style="display:none" aria-hidden="true">${params.logoSvg}</div>`
+    );
+  }
+  return { websiteHtml: html, modelUsed: model };
+}
+
+export async function generateMarketingContent(params: {
+  formatKey: string;
+  topic: string;
+  targetAudience: string;
+  tone: string;
+  callToAction?: string;
+}): Promise<{ content: string; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Clé API Gemini manquante côté serveur (GEMINI_API_KEY).');
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+
+  const formatLabels: Record<string, string> = {
+    tiktok_script: 'Script TikTok percutant (accroche 3s, corps, CTA)',
+    short_video: 'Script Vidéo Courte (Reels / YouTube Shorts)',
+    instagram_post: 'Publication Instagram (carrousel ou légende engageante + hashtags pertinents)',
+    facebook_post: 'Publication Facebook orientée engagement & conversion',
+    linkedin_post: 'Post LinkedIn B2B structuré à forte valeur ajoutée',
+    ad_copy: 'Annonces publicitaires (Meta Ads / Google Ads avec 3 variantes de titres & textes)',
+    slogans: 'Liste de 10 slogans et accroches de marque différenciants',
+    marketing_email: 'Email marketing / prospection structuré (objet, corps, relance)',
+    product_description: 'Fiche et description de produit orientée bénéfices & conversion',
+    editorial_calendar: 'Calendrier éditorial concret sur 14 jours (thèmes, formats, objectifs)',
+  };
+
+  const label = formatLabels[params.formatKey] || 'Contenu marketing professionnel';
+  const prompt = `Tu es un directeur de création et copywriter senior francophone.
+Génère directement le contenu prêt à publier/éditer pour :
+- Format : ${label}
+- Sujet / Produit / Offre : ${params.topic}
+- Public cible : ${params.targetAudience || 'Entrepreneurs et clients francophones'}
+- Ton souhaité : ${params.tone || 'Professionnel, direct et authentique'}
+- Appel à l'action : ${params.callToAction || 'Découvrir l’offre / Prendre contact'}
+
+Sois concret, structuré en Markdown propre, sans blabla introductif inutile.`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    },
+  });
+
+  const text = response.text?.trim();
+  if (!text) {
+    throw new Error('Contenu vide retourné par Gemini.');
+  }
+  return { content: text, modelUsed: model };
+}
+
+export async function generateVideoStoryboard(params: {
+  topic: string;
+  format: '9:16' | '16:9';
+  tone: string;
+  durationTargetSec: number;
+  sourceScript?: string;
+}): Promise<{ storyboard: VideoStoryboard; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Clé API Gemini manquante côté serveur (GEMINI_API_KEY).');
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+  const sceneCount = params.durationTargetSec >= 40 ? 6 : 4;
+
+  const prompt = `Tu es réalisateur et monteur vidéo senior.
+Crée un storyboard vidéo réel et prêt pour le rendu Canvas/WebM en français :
+- Sujet / Script : ${params.sourceScript || params.topic}
+- Format : ${params.format} (${params.format === '9:16' ? 'Vertical TikTok/Reels/Shorts' : 'Horizontal YouTube/Web'})
+- Ton : ${params.tone}
+- Nombre de scènes : ${sceneCount} (durée totale proche de ${params.durationTargetSec}s)
+
+Chaque scène doit avoir :
+- id (ex: "scene-1")
+- title (court titre de la scène)
+- shotType (ex: "Plan serré", "Plan large dynamique", "Texte cinétique", "Démonstration")
+- visualDirection (description précise du visuel)
+- onScreenText (texte court lisible à l'écran, max 8 mots)
+- voiceover (texte exact de la voix off en français naturel)
+- subtitle (sous-titre court synchronisé)
+- durationSec (nombre entier entre 3 et 10)
+- accentColor (couleur hexadécimale ex: "#3B82F6" ou "#7C3AED")`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          format: { type: Type.STRING },
+          hook: { type: Type.STRING },
+          callToAction: { type: Type.STRING },
+          scenes: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                title: { type: Type.STRING },
+                shotType: { type: Type.STRING },
+                visualDirection: { type: Type.STRING },
+                onScreenText: { type: Type.STRING },
+                voiceover: { type: Type.STRING },
+                subtitle: { type: Type.STRING },
+                durationSec: { type: Type.NUMBER },
+                accentColor: { type: Type.STRING },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const parsed = JSON.parse((response.text || '{}').trim()) as VideoStoryboard;
+  const normalizedScenes = (parsed.scenes || []).map((s, idx) => ({
+    id: s.id || `scene-${idx + 1}`,
+    title: s.title || `Scène ${idx + 1}`,
+    shotType: s.shotType || 'Plan dynamique',
+    visualDirection: s.visualDirection || '',
+    onScreenText: s.onScreenText || params.topic.slice(0, 48),
+    voiceover: s.voiceover || s.subtitle || '',
+    subtitle: s.subtitle || s.voiceover || '',
+    durationSec: Math.max(2, Math.min(15, Math.round(Number(s.durationSec) || 5))),
+    accentColor: /^#[0-9A-Fa-f]{6}$/.test(s.accentColor || '') ? s.accentColor : '#3B82F6',
+  }));
+
+  return {
+    storyboard: {
+      title: parsed.title || params.topic.slice(0, 60),
+      format: params.format,
+      hook: parsed.hook || '',
+      callToAction: parsed.callToAction || '',
+      scenes: normalizedScenes,
+    },
+    modelUsed: model,
+  };
+}
+
+export async function generateStructuredDocument(params: {
+  docType: string;
+  title: string;
+  companyName?: string;
+  clientName?: string;
+  context: string;
+}): Promise<{ contentMarkdown: string; modelUsed: string }> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Clé API Gemini manquante côté serveur (GEMINI_API_KEY).');
+  }
+
+  const ai = getClient(apiKey);
+  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
+
+  const prompt = `Rédige un document professionnel complet en Markdown en français.
+Type de document : ${params.docType}
+Titre : ${params.title}
+Émetteur fourni : ${params.companyName || '[À COMPLÉTER — Raison sociale]'}
+Destinataire fourni : ${params.clientName || '[À COMPLÉTER — Nom du client]'}
+Contexte et détails fournis par l'utilisateur :
+${params.context}
+
+RÈGLE DE SÉCURITÉ & FIABILITÉ ABSOLUE :
+Ne JAMAIS inventer de numéro SIRET, SIREN, TVA intracommunautaire, IBAN, BIC, adresse postale, téléphone ou email s'ils n'ont pas été fournis ci-dessus. Indique explicitement [À COMPLÉTER] pour toute information administrative ou bancaire manquante.`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    },
+  });
+
+  const text = response.text?.trim();
+  if (!text) {
+    throw new Error('Document vide retourné par Gemini.');
+  }
+  return { contentMarkdown: text, modelUsed: model };
 }

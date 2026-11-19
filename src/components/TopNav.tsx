@@ -39,7 +39,7 @@ export function TopNav({ activeView, user, onNavigate }: TopNavProps) {
           onClick={() => handleGo('accueil')}
           className="flex items-center gap-2.5 text-left whitespace-nowrap shrink-0 focus-visible:rounded-md"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#7C3AED] text-white">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-[#3B82F6] to-[#7C3AED] text-white">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -53,7 +53,7 @@ export function TopNav({ activeView, user, onNavigate }: TopNavProps) {
             </svg>
           </span>
           <span className="font-display text-lg font-bold tracking-tight text-[#FAFAFA]">
-            NOVA AI
+            NOVA AI PRO
           </span>
         </button>
 

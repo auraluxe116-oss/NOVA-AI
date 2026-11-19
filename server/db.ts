@@ -11,6 +11,7 @@ import {
   type SourceLink,
   type SubscriptionRow,
   type SubscriptionStatus,
+  type UserPreferences,
   type UserRecord,
 } from './types.js';
 
@@ -84,6 +85,8 @@ db.exec(`
     stripe_customer_id TEXT,
     stripe_subscription_id TEXT,
     current_period_end TEXT,
+    recovery_code_hash TEXT,
+    preferences_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -116,6 +119,8 @@ db.exec(`
     user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'general',
+    context_summary TEXT NOT NULL DEFAULT '',
+    summarized_message_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -157,6 +162,54 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_business_projects_user
     ON business_projects(user_id, created_at DESC);
 
+  CREATE TABLE IF NOT EXISTS company_creations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sector TEXT NOT NULL,
+    budget_eur REAL NOT NULL DEFAULT 0,
+    data_json TEXT NOT NULL,
+    logo_svg TEXT NOT NULL DEFAULT '',
+    website_html TEXT NOT NULL DEFAULT '',
+    published_slug TEXT,
+    model_used TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_company_creations_user
+    ON company_creations(user_id, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS published_sites (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    user_id TEXT,
+    title TEXT NOT NULL,
+    html_content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_published_sites_user
+    ON published_sites(user_id, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS user_documents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    doc_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content_markdown TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_documents_user
+    ON user_documents(user_id, updated_at DESC);
+
   CREATE TABLE IF NOT EXISTS usage_logs (
     id TEXT PRIMARY KEY,
     user_id TEXT,
@@ -179,15 +232,57 @@ db.exec(`
   );
 `);
 
-// Safe migration if database existed before cancel_at_period_end column was added
-try {
-  db.exec(`ALTER TABLE users ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0`);
-} catch {
-  // Column already exists
+// Safe migrations for existing databases
+const safeMigrations = [
+  `ALTER TABLE users ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN recovery_code_hash TEXT`,
+  `ALTER TABLE users ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE conversations ADD COLUMN context_summary TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE conversations ADD COLUMN summarized_message_count INTEGER NOT NULL DEFAULT 0`,
+];
+for (const sql of safeMigrations) {
+  try {
+    db.exec(sql);
+  } catch {
+    // Column already exists
+  }
 }
 
 export function getTodayKey(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+export const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  defaultExperience: 'debutant',
+  preferredProvider: 'gemini',
+  preferredModel: 'gemini-4-hydrogen',
+  autoWebSearch: false,
+};
+
+function parsePreferences(raw: string | null | undefined): UserPreferences {
+  if (!raw) return { ...DEFAULT_USER_PREFERENCES };
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserPreferences>;
+    return {
+      defaultExperience:
+        parsed.defaultExperience === 'intermediaire' || parsed.defaultExperience === 'confirme'
+          ? parsed.defaultExperience
+          : 'debutant',
+      preferredProvider:
+        parsed.preferredProvider === 'openai' ||
+        parsed.preferredProvider === 'anthropic' ||
+        parsed.preferredProvider === 'mistral'
+          ? parsed.preferredProvider
+          : 'gemini',
+      preferredModel:
+        typeof parsed.preferredModel === 'string' && parsed.preferredModel.trim()
+          ? parsed.preferredModel.trim()
+          : 'gemini-4-hydrogen',
+      autoWebSearch: Boolean(parsed.autoWebSearch),
+    };
+  } catch {
+    return { ...DEFAULT_USER_PREFERENCES };
+  }
 }
 
 export function toPublicUser(row: UserRecord): PublicUser {
@@ -207,6 +302,8 @@ export function toPublicUser(row: UserRecord): PublicUser {
     stripeCustomerId: row.stripe_customer_id ?? null,
     stripeSubscriptionId: row.stripe_subscription_id ?? null,
     currentPeriodEnd: row.current_period_end ?? null,
+    hasRecoveryCode: Boolean(row.recovery_code_hash),
+    preferences: parsePreferences(row.preferences_json),
     createdAt: row.created_at,
   };
 }
@@ -242,6 +339,7 @@ export function createUser(params: {
   passwordHash: string;
   displayName: string;
   companyName?: string;
+  recoveryCodeHash?: string | null;
 }): UserRecord {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
@@ -252,9 +350,20 @@ export function createUser(params: {
   db.prepare(
     `INSERT INTO users (
       id, email, password_hash, display_name, company_name,
-      plan, billing_interval, subscription_status, cancel_at_period_end, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'free', 'monthly', 'inactive', 0, ?, ?)`
-  ).run(id, normalizedEmail, params.passwordHash, cleanName, cleanCompany, now, now);
+      plan, billing_interval, subscription_status, cancel_at_period_end,
+      recovery_code_hash, preferences_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'free', 'monthly', 'inactive', 0, ?, ?, ?, ?)`
+  ).run(
+    id,
+    normalizedEmail,
+    params.passwordHash,
+    cleanName,
+    cleanCompany,
+    params.recoveryCodeHash ?? null,
+    JSON.stringify(DEFAULT_USER_PREFERENCES),
+    now,
+    now
+  );
 
   const created = findUserById(id);
   if (!created) {
@@ -269,6 +378,8 @@ export function updateUserProfile(
     displayName?: string;
     companyName?: string;
     passwordHash?: string;
+    recoveryCodeHash?: string;
+    preferences?: Partial<UserPreferences>;
   }
 ): UserRecord | null {
   const current = findUserById(userId);
@@ -279,12 +390,40 @@ export function updateUserProfile(
   const companyName =
     updates.companyName !== undefined ? updates.companyName.trim() : current.company_name;
   const passwordHash = updates.passwordHash ?? current.password_hash;
+  const recoveryCodeHash =
+    updates.recoveryCodeHash !== undefined
+      ? updates.recoveryCodeHash
+      : current.recovery_code_hash ?? null;
+  const mergedPrefs: UserPreferences = {
+    ...parsePreferences(current.preferences_json),
+    ...(updates.preferences ?? {}),
+  };
 
   db.prepare(
-    `UPDATE users SET display_name = ?, company_name = ?, password_hash = ?, updated_at = ? WHERE id = ?`
-  ).run(displayName, companyName, passwordHash, now, userId);
+    `UPDATE users SET
+      display_name = ?,
+      company_name = ?,
+      password_hash = ?,
+      recovery_code_hash = ?,
+      preferences_json = ?,
+      updated_at = ?
+     WHERE id = ?`
+  ).run(
+    displayName,
+    companyName,
+    passwordHash,
+    recoveryCodeHash,
+    JSON.stringify(mergedPrefs),
+    now,
+    userId
+  );
 
   return findUserById(userId);
+}
+
+export function deleteUserAccount(userId: string): boolean {
+  const result = db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  return Number(result.changes) > 0;
 }
 
 export function updateUserSubscription(
@@ -440,6 +579,8 @@ export interface ConversationRow {
   user_id: string;
   title: string;
   category: string;
+  context_summary?: string;
+  summarized_message_count?: number;
   created_at: string;
   updated_at: string;
   message_count?: number;
@@ -463,11 +604,11 @@ export function listUserConversations(userId: string): ConversationRow[] {
     .prepare(
       `SELECT c.*,
         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
-        (SELECT substr(m.content, 1, 140) FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview
+        (SELECT substr(m.content, 1, 140) FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_message_preview
        FROM conversations c
        WHERE c.user_id = ?
        ORDER BY c.updated_at DESC
-       LIMIT 100`
+       LIMIT 150`
     )
     .all(userId);
   return rows as unknown as ConversationRow[];
@@ -494,8 +635,8 @@ export function createConversation(params: {
   const category = params.category ?? 'general';
 
   db.prepare(
-    `INSERT INTO conversations (id, user_id, title, category, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO conversations (id, user_id, title, category, context_summary, summarized_message_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, '', 0, ?, ?)`
   ).run(id, params.userId, cleanTitle, category, now, now);
 
   return {
@@ -503,9 +644,21 @@ export function createConversation(params: {
     user_id: params.userId,
     title: cleanTitle,
     category,
+    context_summary: '',
+    summarized_message_count: 0,
     created_at: now,
     updated_at: now,
   };
+}
+
+export function updateConversationSummary(
+  conversationId: string,
+  summary: string,
+  summarizedCount: number
+): void {
+  db.prepare(
+    `UPDATE conversations SET context_summary = ?, summarized_message_count = ? WHERE id = ?`
+  ).run(summary, summarizedCount, conversationId);
 }
 
 export function renameConversation(
@@ -536,7 +689,7 @@ export function deleteConversation(conversationId: string, userId: string): bool
 
 export function listConversationMessages(
   conversationId: string,
-  limit = 60
+  limit = 300
 ): Array<{
   id: string;
   conversationId: string;
@@ -590,6 +743,16 @@ export function getLastConversationMessage(conversationId: string): MessageRow |
     )
     .get(conversationId);
   return (row as unknown as MessageRow | undefined) ?? null;
+}
+
+export function deleteConversationMessage(
+  messageId: string,
+  conversationId: string
+): boolean {
+  const result = db
+    .prepare('DELETE FROM messages WHERE id = ? AND conversation_id = ?')
+    .run(messageId, conversationId);
+  return Number(result.changes) > 0;
 }
 
 export function addMessage(params: {
@@ -679,7 +842,7 @@ export function createBusinessProject(params: {
 export function listBusinessProjects(userId: string): BusinessProjectRow[] {
   return db
     .prepare(
-      'SELECT * FROM business_projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 50'
+      'SELECT * FROM business_projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 80'
     )
     .all(userId) as unknown as BusinessProjectRow[];
 }
@@ -689,6 +852,248 @@ export function deleteBusinessProject(projectId: string, userId: string): boolea
     .prepare('DELETE FROM business_projects WHERE id = ? AND user_id = ?')
     .run(projectId, userId);
   return Number(result.changes) > 0;
+}
+
+// Company Creations (Brand + Logo SVG + Commercial Offer + Business Plan + Website HTML)
+export interface CompanyCreationRow {
+  id: string;
+  user_id: string;
+  title: string;
+  sector: string;
+  budget_eur: number;
+  data_json: string;
+  logo_svg: string;
+  website_html: string;
+  published_slug: string | null;
+  model_used: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createCompanyCreation(params: {
+  userId: string;
+  title: string;
+  sector: string;
+  budgetEur: number;
+  dataJson: string;
+  logoSvg: string;
+  websiteHtml: string;
+  modelUsed?: string | null;
+}): CompanyCreationRow {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO company_creations (
+      id, user_id, title, sector, budget_eur, data_json, logo_svg, website_html,
+      published_slug, model_used, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+  ).run(
+    id,
+    params.userId,
+    params.title.trim().slice(0, 140),
+    params.sector.trim().slice(0, 100),
+    Number.isFinite(params.budgetEur) ? Math.max(0, params.budgetEur) : 0,
+    params.dataJson,
+    params.logoSvg,
+    params.websiteHtml,
+    params.modelUsed ?? null,
+    now,
+    now
+  );
+
+  return db
+    .prepare('SELECT * FROM company_creations WHERE id = ? LIMIT 1')
+    .get(id) as unknown as CompanyCreationRow;
+}
+
+export function listCompanyCreations(userId: string): CompanyCreationRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM company_creations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 40'
+    )
+    .all(userId) as unknown as CompanyCreationRow[];
+}
+
+export function updateCompanyCreationAssets(
+  id: string,
+  userId: string,
+  updates: {
+    logoSvg?: string;
+    websiteHtml?: string;
+    publishedSlug?: string | null;
+  }
+): CompanyCreationRow | null {
+  const existing = db
+    .prepare('SELECT * FROM company_creations WHERE id = ? AND user_id = ? LIMIT 1')
+    .get(id, userId) as unknown as CompanyCreationRow | undefined;
+  if (!existing) return null;
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE company_creations SET
+      logo_svg = ?,
+      website_html = ?,
+      published_slug = ?,
+      updated_at = ?
+     WHERE id = ? AND user_id = ?`
+  ).run(
+    updates.logoSvg !== undefined ? updates.logoSvg : existing.logo_svg,
+    updates.websiteHtml !== undefined ? updates.websiteHtml : existing.website_html,
+    updates.publishedSlug !== undefined ? updates.publishedSlug : existing.published_slug,
+    now,
+    id,
+    userId
+  );
+
+  return db
+    .prepare('SELECT * FROM company_creations WHERE id = ? LIMIT 1')
+    .get(id) as unknown as CompanyCreationRow;
+}
+
+export function deleteCompanyCreation(id: string, userId: string): boolean {
+  const res = db
+    .prepare('DELETE FROM company_creations WHERE id = ? AND user_id = ?')
+    .run(id, userId);
+  return Number(res.changes) > 0;
+}
+
+// Published Sites (Real live URL hosting on /sites/:slug)
+export interface PublishedSiteRow {
+  id: string;
+  slug: string;
+  user_id: string | null;
+  title: string;
+  html_content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function slugifyTitle(input: string): string {
+  const base = input
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36);
+  const suffix = crypto.randomBytes(3).toString('hex');
+  return `${base || 'site-nova'}-${suffix}`;
+}
+
+export function publishSite(params: {
+  userId: string | null;
+  title: string;
+  htmlContent: string;
+  existingSlug?: string | null;
+}): PublishedSiteRow {
+  const now = new Date().toISOString();
+  if (params.existingSlug && params.userId) {
+    const existing = db
+      .prepare('SELECT * FROM published_sites WHERE slug = ? AND user_id = ? LIMIT 1')
+      .get(params.existingSlug, params.userId) as unknown as PublishedSiteRow | undefined;
+    if (existing) {
+      db.prepare(
+        'UPDATE published_sites SET title = ?, html_content = ?, updated_at = ? WHERE id = ?'
+      ).run(params.title.trim().slice(0, 140), params.htmlContent, now, existing.id);
+      return db
+        .prepare('SELECT * FROM published_sites WHERE id = ? LIMIT 1')
+        .get(existing.id) as unknown as PublishedSiteRow;
+    }
+  }
+
+  const id = crypto.randomUUID();
+  const slug = slugifyTitle(params.title);
+  db.prepare(
+    `INSERT INTO published_sites (id, slug, user_id, title, html_content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, slug, params.userId, params.title.trim().slice(0, 140), params.htmlContent, now, now);
+
+  return db
+    .prepare('SELECT * FROM published_sites WHERE id = ? LIMIT 1')
+    .get(id) as unknown as PublishedSiteRow;
+}
+
+export function getPublishedSiteBySlug(slug: string): PublishedSiteRow | null {
+  const row = db
+    .prepare('SELECT * FROM published_sites WHERE slug = ? LIMIT 1')
+    .get(slug);
+  return (row as unknown as PublishedSiteRow | undefined) ?? null;
+}
+
+export function listUserPublishedSites(userId: string): Array<Omit<PublishedSiteRow, 'html_content'>> {
+  return db
+    .prepare(
+      'SELECT id, slug, user_id, title, created_at, updated_at FROM published_sites WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50'
+    )
+    .all(userId) as unknown as Array<Omit<PublishedSiteRow, 'html_content'>>;
+}
+
+export function countUserPublishedSites(userId: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS c FROM published_sites WHERE user_id = ?')
+    .get(userId) as { c?: number } | undefined;
+  return Number(row?.c ?? 0);
+}
+
+export function deletePublishedSite(id: string, userId: string): boolean {
+  const res = db
+    .prepare('DELETE FROM published_sites WHERE id = ? AND user_id = ?')
+    .run(id, userId);
+  return Number(res.changes) > 0;
+}
+
+// User Documents (Invoices, Quotes, Proposals, Business Plans, Reports)
+export interface UserDocumentRow {
+  id: string;
+  user_id: string;
+  doc_type: string;
+  title: string;
+  content_markdown: string;
+  metadata_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createUserDocument(params: {
+  userId: string;
+  docType: string;
+  title: string;
+  contentMarkdown: string;
+  metadataJson?: string;
+}): UserDocumentRow {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO user_documents (id, user_id, doc_type, title, content_markdown, metadata_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    params.userId,
+    params.docType.trim().slice(0, 50),
+    params.title.trim().slice(0, 140),
+    params.contentMarkdown,
+    params.metadataJson ?? '{}',
+    now,
+    now
+  );
+  return db
+    .prepare('SELECT * FROM user_documents WHERE id = ? LIMIT 1')
+    .get(id) as unknown as UserDocumentRow;
+}
+
+export function listUserDocuments(userId: string): UserDocumentRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM user_documents WHERE user_id = ? ORDER BY updated_at DESC LIMIT 80'
+    )
+    .all(userId) as unknown as UserDocumentRow[];
+}
+
+export function deleteUserDocument(id: string, userId: string): boolean {
+  const res = db
+    .prepare('DELETE FROM user_documents WHERE id = ? AND user_id = ?')
+    .run(id, userId);
+  return Number(res.changes) > 0;
 }
 
 export function recordUsage(params: {
@@ -733,6 +1138,9 @@ export function getUserDashboardStats(userId: string): {
   totalMessages: number;
   totalConversations: number;
   totalBusinessProjects: number;
+  totalCompanyCreations: number;
+  totalDocuments: number;
+  totalPublishedSites: number;
 } {
   const dayKey = getTodayKey();
   const messagesToday = Number(
@@ -778,6 +1186,21 @@ export function getUserDashboardStats(userId: string): {
         .get(userId) as { c?: number } | undefined
     )?.c ?? 0
   );
+  const totalCompanyCreations = Number(
+    (
+      db
+        .prepare(`SELECT COUNT(*) AS c FROM company_creations WHERE user_id = ?`)
+        .get(userId) as { c?: number } | undefined
+    )?.c ?? 0
+  );
+  const totalDocuments = Number(
+    (
+      db
+        .prepare(`SELECT COUNT(*) AS c FROM user_documents WHERE user_id = ?`)
+        .get(userId) as { c?: number } | undefined
+    )?.c ?? 0
+  );
+  const totalPublishedSites = countUserPublishedSites(userId);
 
   return {
     messagesToday,
@@ -785,6 +1208,9 @@ export function getUserDashboardStats(userId: string): {
     totalMessages,
     totalConversations,
     totalBusinessProjects,
+    totalCompanyCreations,
+    totalDocuments,
+    totalPublishedSites,
   };
 }
 

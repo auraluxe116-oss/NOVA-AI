@@ -218,8 +218,8 @@ export function App() {
         <footer className="border-t border-[#1C1C28] bg-[#08080B] py-8">
           <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-4 px-4 text-xs text-[#8888A0] sm:flex-row sm:items-center sm:px-6">
             <div className="flex items-center gap-3">
-              <span className="font-display text-sm font-bold text-[#FAFAFA]">NOVA AI</span>
-              <span>Plateforme IA conversationnelle &amp; Mode Business</span>
+              <span className="font-display text-sm font-bold text-[#FAFAFA]">NOVA AI PRO</span>
+              <span>Plateforme IA conversationnelle &amp; Suite Business complète</span>
             </div>
             <div className="flex flex-wrap items-center gap-5">
               <button

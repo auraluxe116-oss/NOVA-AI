@@ -1,17 +1,25 @@
 import type {
+  AIProviderId,
+  AIProviderInfo,
   BillingInterval,
   BusinessProject,
   ChatMessage,
+  CompanyCreationResult,
   ConversationSummary,
   DashboardData,
   ExperienceLevel,
   PlanTier,
   PublicUser,
+  PublishedSiteSummary,
   QuotaSnapshot,
+  SavedCompanyCreation,
   SourceLink,
   StripeInvoiceSummary,
   StripeStatus,
   SubscriptionRecord,
+  UserDocument,
+  UserPreferences,
+  VideoStoryboard,
 } from '../types/nova';
 
 export class ApiError extends Error {
@@ -28,6 +36,7 @@ export class ApiError extends Error {
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     credentials: 'include',
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(init.headers || {}),
@@ -60,12 +69,18 @@ export async function fetchAuthMe(): Promise<{
   return requestJson('/api/auth/me');
 }
 
+export async function fetchAIProviders(): Promise<{
+  providers: AIProviderInfo[];
+}> {
+  return requestJson('/api/ai/providers');
+}
+
 export async function registerUser(payload: {
   email: string;
   password: string;
   displayName: string;
   companyName?: string;
-}): Promise<{ user: PublicUser; quota: QuotaSnapshot }> {
+}): Promise<{ user: PublicUser; quota: QuotaSnapshot; recoveryCode?: string }> {
   return requestJson('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -82,6 +97,17 @@ export async function loginUser(payload: {
   });
 }
 
+export async function resetPasswordApi(payload: {
+  email: string;
+  recoveryCode: string;
+  newPassword: string;
+}): Promise<{ ok: boolean; nextRecoveryCode: string; message: string }> {
+  return requestJson('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function logoutUser(): Promise<void> {
   await requestJson('/api/auth/logout', { method: 'POST' });
 }
@@ -91,10 +117,19 @@ export async function updateProfile(payload: {
   companyName?: string;
   currentPassword?: string;
   newPassword?: string;
-}): Promise<{ user: PublicUser; quota: QuotaSnapshot }> {
+  regenerateRecoveryCode?: boolean;
+  preferences?: Partial<UserPreferences>;
+}): Promise<{ user: PublicUser; quota: QuotaSnapshot; recoveryCode?: string | null }> {
   return requestJson('/api/auth/profile', {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteAccountApi(password: string): Promise<void> {
+  await requestJson('/api/auth/account', {
+    method: 'DELETE',
+    body: JSON.stringify({ password }),
   });
 }
 
@@ -139,6 +174,166 @@ export async function fetchBusinessProjects(): Promise<{
 
 export async function deleteBusinessProjectApi(id: string): Promise<void> {
   await requestJson(`/api/business/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Company Creation Suite APIs
+export async function generateCompanySuiteApi(payload: {
+  title: string;
+  sector: string;
+  budgetEur: number;
+  goal: string;
+  skills?: string;
+  weeklyHours?: number;
+  experienceLevel?: ExperienceLevel;
+  contextDetails?: string;
+}): Promise<{
+  suite: CompanyCreationResult;
+  creationId: string | null;
+  modelUsed: string;
+  quota: QuotaSnapshot;
+}> {
+  return requestJson('/api/business/company-suite', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function regenerateLogoApi(payload: {
+  brandName: string;
+  sector: string;
+  primaryColor: string;
+  secondaryColor: string;
+  styleHint?: string;
+  creationId?: string | null;
+}): Promise<{ logoSvg: string; modelUsed: string }> {
+  return requestJson('/api/business/generate-logo', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function regenerateWebsiteApi(payload: {
+  brandName: string;
+  slogan: string;
+  sector: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  packagesText: string;
+  logoSvg: string;
+  customInstructions?: string;
+  creationId?: string | null;
+}): Promise<{ websiteHtml: string; modelUsed: string }> {
+  return requestJson('/api/business/generate-website', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchCompanyCreations(): Promise<{
+  creations: SavedCompanyCreation[];
+}> {
+  return requestJson('/api/business/company-creations');
+}
+
+export async function deleteCompanyCreationApi(id: string): Promise<void> {
+  await requestJson(`/api/business/company-creations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function publishWebsiteApi(payload: {
+  title: string;
+  htmlContent: string;
+  existingSlug?: string | null;
+  creationId?: string | null;
+}): Promise<{
+  site: PublishedSiteSummary;
+  publicPath: string;
+  publicUrl: string;
+}> {
+  return requestJson('/api/sites/publish', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchPublishedSites(): Promise<{
+  sites: PublishedSiteSummary[];
+}> {
+  return requestJson('/api/sites');
+}
+
+export async function deletePublishedSiteApi(id: string): Promise<void> {
+  await requestJson(`/api/sites/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function generateContentMarketingApi(payload: {
+  formatKey: string;
+  topic: string;
+  targetAudience?: string;
+  tone?: string;
+  callToAction?: string;
+}): Promise<{ content: string; modelUsed: string }> {
+  return requestJson('/api/content/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function generateVideoStoryboardApi(payload: {
+  topic: string;
+  format: '9:16' | '16:9';
+  tone?: string;
+  durationTargetSec?: number;
+  sourceScript?: string;
+}): Promise<{ storyboard: VideoStoryboard; modelUsed: string }> {
+  return requestJson('/api/video/storyboard', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchDocuments(): Promise<{
+  documents: UserDocument[];
+}> {
+  return requestJson('/api/documents');
+}
+
+export async function generateDocumentApi(payload: {
+  docType: string;
+  title: string;
+  companyName?: string;
+  clientName?: string;
+  context: string;
+}): Promise<{
+  contentMarkdown: string;
+  modelUsed: string;
+  document: UserDocument | null;
+}> {
+  return requestJson('/api/documents/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveDocumentApi(payload: {
+  docType: string;
+  title: string;
+  contentMarkdown: string;
+}): Promise<{ document: UserDocument }> {
+  return requestJson('/api/documents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDocumentApi(id: string): Promise<void> {
+  await requestJson(`/api/documents/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 }
@@ -222,12 +417,12 @@ async function consumeSseStream(
     watchdog = setTimeout(() => {
       timedOut = true;
       internalController.abort();
-    }, 50_000);
+    }, 55_000);
   };
   let watchdog = setTimeout(() => {
     timedOut = true;
     internalController.abort();
-  }, 50_000);
+  }, 55_000);
 
   const onExternalAbort = () => internalController.abort();
   signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -237,6 +432,7 @@ async function consumeSseStream(
     res = await fetch(url, {
       method: 'POST',
       credentials: 'include',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: internalController.signal,
@@ -286,9 +482,11 @@ async function consumeSseStream(
   let buffer = '';
 
   const dispatchBlock = (rawEvent: string) => {
+    if (signal.aborted) return;
     const trimmed = rawEvent.trim();
     if (!trimmed) return;
     for (const line of trimmed.split('\n')) {
+      if (signal.aborted) return;
       if (!line.startsWith('data:')) continue;
       const jsonStr = line.slice(5).trim();
       if (!jsonStr) continue;
@@ -331,6 +529,9 @@ async function consumeSseStream(
 
   try {
     while (true) {
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const { value, done } = await reader.read();
       if (done) break;
       resetWatchdog();
@@ -346,7 +547,7 @@ async function consumeSseStream(
     }
 
     const tail = (buffer + decoder.decode()).replace(/\r\n/g, '\n').trim();
-    if (tail) {
+    if (tail && !signal.aborted) {
       dispatchBlock(tail);
     }
   } catch (err) {
@@ -356,6 +557,9 @@ async function consumeSseStream(
         504,
         'CLIENT_STREAM_TIMEOUT'
       );
+    }
+    if (signal.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
     }
     throw err;
   } finally {
@@ -369,6 +573,8 @@ export async function streamChatMessage(params: {
   conversationId?: string | null;
   useWebSearch?: boolean;
   isRetry?: boolean;
+  provider?: AIProviderId;
+  model?: string;
   attachment?: { name: string; content: string } | null;
   guestHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   signal: AbortSignal;
@@ -380,6 +586,7 @@ export async function streamChatMessage(params: {
     modelUsed?: string;
     latencyMs?: number;
     quota?: QuotaSnapshot;
+    summarizedActive?: boolean;
   }) => void;
 }): Promise<void> {
   await consumeSseStream(
@@ -389,6 +596,8 @@ export async function streamChatMessage(params: {
       conversationId: params.conversationId ?? null,
       useWebSearch: Boolean(params.useWebSearch),
       isRetry: Boolean(params.isRetry),
+      provider: params.provider ?? 'gemini',
+      model: params.model,
       attachment: params.attachment ?? null,
       guestHistory: params.guestHistory ?? [],
     },
@@ -404,6 +613,7 @@ export async function streamChatMessage(params: {
             modelUsed?: string;
             latencyMs?: number;
             quota?: QuotaSnapshot;
+            summarizedActive?: boolean;
           }
         ),
     }
@@ -416,6 +626,8 @@ export async function streamBusinessGeneration(params: {
   sector: string;
   budgetEur: number;
   goal: string;
+  skills?: string;
+  weeklyHours?: number;
   experienceLevel?: ExperienceLevel;
   contextDetails?: string;
   useWebSearch?: boolean;
@@ -438,6 +650,8 @@ export async function streamBusinessGeneration(params: {
       sector: params.sector,
       budgetEur: params.budgetEur,
       goal: params.goal,
+      skills: params.skills ?? '',
+      weeklyHours: params.weeklyHours,
       experienceLevel: params.experienceLevel ?? 'debutant',
       contextDetails: params.contextDetails ?? '',
       useWebSearch: Boolean(params.useWebSearch),
