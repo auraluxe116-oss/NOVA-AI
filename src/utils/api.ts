@@ -25,11 +25,18 @@ import type {
 export class ApiError extends Error {
   status: number;
   code: string;
+  retryAfterSec: number | null;
 
-  constructor(message: string, status = 500, code = 'API_ERROR') {
+  constructor(
+    message: string,
+    status = 500,
+    code = 'API_ERROR',
+    retryAfterSec: number | null = null
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryAfterSec = retryAfterSec;
   }
 }
 
@@ -53,10 +60,18 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!res.ok) {
+    const headerRetry = Number(res.headers.get('retry-after') ?? '');
+    const retryAfterSec =
+      typeof parsed.retryAfterSec === 'number'
+        ? parsed.retryAfterSec
+        : Number.isFinite(headerRetry) && headerRetry > 0
+          ? Math.ceil(headerRetry)
+          : null;
     throw new ApiError(
       String(parsed.error || `Erreur serveur (${res.status})`),
       res.status,
-      String(parsed.code || 'HTTP_ERROR')
+      String(parsed.code || 'HTTP_ERROR'),
+      retryAfterSec
     );
   }
   return parsed as T;
@@ -464,10 +479,18 @@ async function consumeSseStream(
       res.status === 404
         ? `Route API introuvable (${url} — HTTP 404). Vérifiez le déploiement des fonctions serverless /api.`
         : `Erreur serveur (${res.status})`;
+    const headerRetry = Number(res.headers.get('retry-after') ?? '');
+    const retryAfterSec =
+      typeof errObj.retryAfterSec === 'number'
+        ? errObj.retryAfterSec
+        : Number.isFinite(headerRetry) && headerRetry > 0
+          ? Math.ceil(headerRetry)
+          : null;
     throw new ApiError(
       String(errObj.error || fallbackMessage),
       res.status,
-      String(errObj.code || (res.status === 404 ? 'API_NOT_FOUND' : 'STREAM_HTTP_ERROR'))
+      String(errObj.code || (res.status === 404 ? 'API_NOT_FOUND' : 'STREAM_HTTP_ERROR')),
+      retryAfterSec
     );
   }
 
@@ -518,10 +541,19 @@ async function consumeSseStream(
       } else if (type === 'done') {
         handlers.onDone(event);
       } else if (type === 'error') {
+        const errStatus =
+          typeof event.status === 'number' && Number.isFinite(event.status)
+            ? event.status
+            : 500;
+        const retryAfterSec =
+          typeof event.retryAfterSec === 'number' && Number.isFinite(event.retryAfterSec)
+            ? event.retryAfterSec
+            : null;
         throw new ApiError(
           String(event.error || 'Erreur lors de la génération IA.'),
-          500,
-          String(event.code || 'STREAM_ERROR')
+          errStatus,
+          String(event.code || 'STREAM_ERROR'),
+          retryAfterSec
         );
       }
     }

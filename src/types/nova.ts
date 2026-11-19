@@ -99,6 +99,9 @@ export interface ChatMessage {
   createdAt: string;
   isStreaming?: boolean;
   isError?: boolean;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  retryAfterSec?: number | null;
 }
 
 export interface ConversationSummary {

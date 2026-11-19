@@ -17,20 +17,67 @@ export const GEMINI_MODELS = {
 const TTFT_PRIMARY_MS = 6_500;
 const TTFT_FALLBACK_MS = 16_000;
 const STREAM_INACTIVITY_MS = 35_000;
+const GENERATE_TIMEOUT_MS = 35_000;
 const COOLDOWN_MS = 90_000;
+const DEFAULT_RETRY_BASE_MS = 600;
+const MAX_AUTO_RETRY_WAIT_MS = 10_000;
 
 let primaryCooldownUntil = 0;
+let fallbackCooldownUntil = 0;
 
 function isPrimaryHealthy(): boolean {
   return Date.now() >= primaryCooldownUntil;
 }
 
+function isFallbackHealthy(): boolean {
+  return Date.now() >= fallbackCooldownUntil;
+}
+
 function tripPrimaryCooldown(reason: unknown): void {
   primaryCooldownUntil = Date.now() + COOLDOWN_MS;
   console.warn(
-    `[NOVA AI PRO] Bascule temporaire vers ${GEMINI_MODELS.fallback} pendant 90s :`,
+    `[NOVA AI PRO] Bascule temporaire depuis ${GEMINI_MODELS.primary} pendant 90s :`,
     reason instanceof Error ? reason.message : String(reason)
   );
+}
+
+function tripFallbackCooldown(reason: unknown): void {
+  fallbackCooldownUntil = Date.now() + COOLDOWN_MS;
+  console.warn(
+    `[NOVA AI PRO] Modèle de secours indisponible temporairement pendant 90s :`,
+    reason instanceof Error ? reason.message : String(reason)
+  );
+}
+
+export function resetGeminiHealthStateForTests(): void {
+  primaryCooldownUntil = 0;
+  fallbackCooldownUntil = 0;
+}
+
+export function resolveConfiguredFallbackModel(activeModel: string): string | null {
+  if (!getGeminiApiKey()) return null;
+
+  const envOverride = process.env.GEMINI_FALLBACK_MODEL?.trim();
+  if (envOverride !== undefined) {
+    const lower = envOverride.toLowerCase();
+    if (!envOverride || lower === 'none' || lower === 'off' || lower === 'false' || lower === 'disabled') {
+      return null;
+    }
+    if (
+      envOverride !== GEMINI_MODELS.primary &&
+      envOverride !== GEMINI_MODELS.fallback
+    ) {
+      return null;
+    }
+    if (envOverride === activeModel) return null;
+    return isFallbackHealthy() ? envOverride : null;
+  }
+
+  if (activeModel !== GEMINI_MODELS.primary) {
+    return null;
+  }
+
+  return isFallbackHealthy() ? GEMINI_MODELS.fallback : null;
 }
 
 function cleanSecret(value: string | undefined, placeholders: string[]): string | null {
@@ -137,66 +184,268 @@ function getClient(apiKey: string): GoogleGenAI {
   return cachedClient;
 }
 
-function isTransientError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes('503') ||
-    msg.includes('unavailable') ||
-    msg.includes('high demand') ||
-    msg.includes('overloaded') ||
-    msg.includes('timeout') ||
-    msg.includes('econnreset') ||
-    msg.includes('etimedout') ||
-    msg.includes('fetch failed') ||
-    msg.includes('network')
-  );
+export type GeminiErrorCategory =
+  | 'aborted'
+  | 'quota_exhausted'
+  | 'rate_limit'
+  | 'unavailable'
+  | 'timeout'
+  | 'network'
+  | 'auth'
+  | 'model_unavailable'
+  | 'unknown';
+
+export interface ClassifiedGeminiError {
+  category: GeminiErrorCategory;
+  httpStatus: number | null;
+  retryAfterMs: number | null;
+  rawMessage: string;
+}
+
+function readHeaderValue(headers: unknown, key: string): string | null {
+  if (!headers || typeof headers !== 'object') return null;
+  const target = key.toLowerCase();
+  if ('get' in headers && typeof (headers as { get?: unknown }).get === 'function') {
+    const val = (headers as { get: (k: string) => unknown }).get(key) ??
+      (headers as { get: (k: string) => unknown }).get(target);
+    return typeof val === 'string' && val.trim() ? val.trim() : null;
+  }
+  const record = headers as Record<string, unknown>;
+  for (const [k, v] of Object.entries(record)) {
+    if (k.toLowerCase() === target && v !== undefined && v !== null) {
+      const str = String(v).trim();
+      if (str) return str;
+    }
+  }
+  return null;
+}
+
+export function extractRetryAfterMs(err: unknown): number | null {
+  const errObj = err && typeof err === 'object' ? (err as Record<string, unknown>) : null;
+  const rawHeader =
+    readHeaderValue(errObj?.headers, 'retry-after') ??
+    readHeaderValue((errObj?.response as Record<string, unknown> | undefined)?.headers, 'retry-after') ??
+    readHeaderValue((errObj?.cause as Record<string, unknown> | undefined)?.headers, 'retry-after');
+
+  if (rawHeader) {
+    const numeric = Number(rawHeader);
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      return Math.round(numeric * 1000);
+    }
+    const parsedDate = Date.parse(rawHeader);
+    if (!Number.isNaN(parsedDate)) {
+      return Math.max(0, parsedDate - Date.now());
+    }
+  }
+
+  const rawText = err instanceof Error ? err.message : String(err);
+  const secMatch =
+    rawText.match(/retry[-_\s]?after\s*[:=]\s*["']?(\d+(?:\.\d+)?)\s*s?/i) ||
+    rawText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/i) ||
+    rawText.match(/retry\s+in\s+(\d+(?:\.\d+)?)\s*s/i);
+  if (secMatch && secMatch[1]) {
+    const sec = Number(secMatch[1]);
+    if (Number.isFinite(sec) && sec >= 0) {
+      return Math.round(sec * 1000);
+    }
+  }
+
+  return null;
+}
+
+export function extractHttpStatus(err: unknown): number | null {
+  const errObj = err && typeof err === 'object' ? (err as Record<string, unknown>) : null;
+  const candidates = [
+    errObj?.status,
+    errObj?.statusCode,
+    (errObj?.response as Record<string, unknown> | undefined)?.status,
+    (errObj?.cause as Record<string, unknown> | undefined)?.status,
+    typeof errObj?.code === 'number' ? errObj.code : null,
+  ];
+  for (const val of candidates) {
+    if (typeof val === 'number' && val >= 100 && val <= 599) {
+      return val;
+    }
+  }
+
+  const msg = err instanceof Error ? err.message : String(err);
+  const statusMatch = msg.match(/\b(401|403|404|408|429|500|502|503|504)\b/);
+  if (statusMatch && statusMatch[1]) {
+    return Number(statusMatch[1]);
+  }
+  return null;
+}
+
+export function classifyGeminiError(err: unknown): ClassifiedGeminiError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const lower = rawMessage.toLowerCase();
+  const httpStatus = extractHttpStatus(err);
+  const retryAfterMs = extractRetryAfterMs(err);
+
+  if (
+    rawMessage === 'CLIENT_ABORTED' ||
+    (err instanceof Error && err.name === 'AbortError' && !lower.includes('timeout'))
+  ) {
+    return { category: 'aborted', httpStatus, retryAfterMs, rawMessage };
+  }
+
+  if (
+    lower.includes('ttft_timeout') ||
+    lower.includes('stream_timeout') ||
+    lower.includes('generate_timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('etimedout') ||
+    lower.includes('timeout') ||
+    httpStatus === 408 ||
+    httpStatus === 504
+  ) {
+    return { category: 'timeout', httpStatus: httpStatus ?? 504, retryAfterMs, rawMessage };
+  }
+
+  if (
+    httpStatus === 401 ||
+    httpStatus === 403 ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('permission_denied') ||
+    lower.includes('unauthorized')
+  ) {
+    return { category: 'auth', httpStatus: httpStatus ?? 403, retryAfterMs, rawMessage };
+  }
+
+  if (
+    httpStatus === 404 ||
+    lower.includes('model not found') ||
+    lower.includes('is not found for api version') ||
+    lower.includes('is not supported for')
+  ) {
+    return { category: 'model_unavailable', httpStatus: 404, retryAfterMs, rawMessage };
+  }
+
+  if (
+    httpStatus === 429 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('too many requests') ||
+    lower.includes('rate limit')
+  ) {
+    const hasHardQuotaSignal =
+      lower.includes('exceeded your current quota') ||
+      lower.includes('quota exceeded') ||
+      lower.includes('insufficient quota') ||
+      lower.includes('billing') ||
+      lower.includes('limit: 0') ||
+      lower.includes('per_day') ||
+      lower.includes('per day') ||
+      lower.includes('daily') ||
+      lower.includes('free_tier') ||
+      (retryAfterMs !== null && retryAfterMs > MAX_AUTO_RETRY_WAIT_MS);
+
+    return {
+      category: hasHardQuotaSignal ? 'quota_exhausted' : 'rate_limit',
+      httpStatus: 429,
+      retryAfterMs,
+      rawMessage,
+    };
+  }
+
+  if (
+    httpStatus === 503 ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('overloaded') ||
+    lower.includes('service unavailable')
+  ) {
+    return { category: 'unavailable', httpStatus: 503, retryAfterMs, rawMessage };
+  }
+
+  if (
+    httpStatus === 502 ||
+    lower.includes('econnreset') ||
+    lower.includes('fetch failed') ||
+    lower.includes('network') ||
+    lower.includes('socket hang up')
+  ) {
+    return { category: 'network', httpStatus: httpStatus ?? 503, retryAfterMs, rawMessage };
+  }
+
+  return { category: 'unknown', httpStatus, retryAfterMs, rawMessage };
 }
 
 export function mapGeminiErrorMessage(err: unknown): {
   status: number;
   code: string;
   message: string;
+  retryAfterSec?: number;
 } {
-  const raw = err instanceof Error ? err.message : String(err);
-  const lower = raw.toLowerCase();
+  const classified = classifyGeminiError(err);
+  const retryAfterSec =
+    classified.retryAfterMs !== null && classified.retryAfterMs > 0
+      ? Math.max(1, Math.ceil(classified.retryAfterMs / 1000))
+      : undefined;
 
-  if (lower.includes('ttft_timeout') || lower.includes('stream_timeout') || lower.includes('timed out')) {
-    return {
-      status: 504,
-      code: 'AI_TIMEOUT',
-      message:
-        "Le délai d'attente du moteur IA a été dépassé. Clique sur Réessayer pour relancer immédiatement.",
-    };
+  switch (classified.category) {
+    case 'timeout':
+      return {
+        status: 504,
+        code: 'AI_TIMEOUT',
+        retryAfterSec,
+        message:
+          "Le délai d'attente du moteur Gemini a été dépassé (timeout). Votre message a été conservé : cliquez sur Réessayer.",
+      };
+    case 'auth':
+      return {
+        status: 403,
+        code: 'AI_AUTH_ERROR',
+        message:
+          'Clé API IA invalide, expirée ou non autorisée (HTTP 401/403). Vérifiez la clé dans Settings > Secrets.',
+      };
+    case 'quota_exhausted':
+      return {
+        status: 429,
+        code: 'AI_QUOTA_EXHAUSTED',
+        retryAfterSec,
+        message: retryAfterSec
+          ? `Quota de l'API Gemini épuisé pour le moment (HTTP 429 — délai indiqué : ${retryAfterSec}s). Patientez jusqu'au renouvellement du quota ou utilisez une clé/capacité API adaptée.`
+          : "Quota de l'API Gemini épuisé pour le moment (HTTP 429). Aucune relance en boucle n'est effectuée : patientez jusqu'au renouvellement du quota ou utilisez une clé/capacité API adaptée.",
+      };
+    case 'rate_limit':
+      return {
+        status: 429,
+        code: 'AI_RATE_LIMIT',
+        retryAfterSec,
+        message: retryAfterSec
+          ? `Limite temporaire de débit atteinte chez Gemini (HTTP 429). Patientez environ ${retryAfterSec} seconde(s) avant de cliquer sur Réessayer.`
+          : "Limite temporaire de débit atteinte chez le fournisseur IA (HTTP 429). Aucun blocage interne NOVA n'est actif : patientez quelques secondes puis cliquez sur Réessayer.",
+      };
+    case 'unavailable':
+      return {
+        status: 503,
+        code: 'AI_BUSY',
+        retryAfterSec,
+        message: retryAfterSec
+          ? `Le moteur Gemini est momentanément saturé (HTTP 503). Réessayez dans ${retryAfterSec} seconde(s).`
+          : 'Le moteur Gemini est momentanément saturé ou indisponible (HTTP 503). Réessayez dans un court instant.',
+      };
+    case 'model_unavailable':
+      return {
+        status: 503,
+        code: 'AI_MODEL_UNAVAILABLE',
+        message:
+          'Le modèle Gemini demandé est indisponible pour cette configuration API. Sélectionnez un autre modèle disponible.',
+      };
+    case 'network':
+      return {
+        status: 503,
+        code: 'AI_NETWORK_ERROR',
+        message:
+          'Erreur réseau temporaire lors de la connexion au moteur Gemini. Votre message a été conservé : cliquez sur Réessayer.',
+      };
+    default:
+      return {
+        status: 500,
+        code: 'AI_ERROR',
+        message: `Le moteur IA n'a pas pu finaliser la réponse : ${classified.rawMessage}`,
+      };
   }
-  if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403')) {
-    return {
-      status: 403,
-      code: 'AI_AUTH_ERROR',
-      message:
-        'Clé API IA invalide ou non autorisée. Vérifie ta clé dans Settings > Secrets.',
-    };
-  }
-  if (lower.includes('resource_exhausted') || lower.includes('429')) {
-    return {
-      status: 429,
-      code: 'AI_RATE_LIMIT',
-      message:
-        "Limite temporaire de débit atteinte chez le fournisseur IA (HTTP 429). Aucun blocage interne NOVA n'est actif : patiente quelques secondes puis clique sur Réessayer.",
-    };
-  }
-  if (lower.includes('503') || lower.includes('unavailable') || lower.includes('high demand')) {
-    return {
-      status: 503,
-      code: 'AI_BUSY',
-      message:
-        'Le serveur IA du fournisseur est momentanément saturé. Réessaie dans un court instant.',
-    };
-  }
-  return {
-    status: 500,
-    code: 'AI_ERROR',
-    message: `Le moteur IA n'a pas pu finaliser la réponse : ${raw}`,
-  };
 }
 
 export function shouldAutoEnableWebSearch(prompt: string): boolean {
@@ -457,7 +706,25 @@ async function streamOnceWithGeminiModel(params: {
   }
 }
 
-async function runWithResilientGeminiFallback(params: {
+async function cancellableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  if (signal?.aborted) {
+    throw new Error('CLIENT_ABORTED');
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('CLIENT_ABORTED'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export async function runWithResilientGeminiFallback(params: {
   ai: GoogleGenAI;
   contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
   systemInstruction: string;
@@ -466,104 +733,283 @@ async function runWithResilientGeminiFallback(params: {
   externalSignal?: AbortSignal;
   callbacks: StreamCallbacks;
   startedAt: number;
+  retryBaseMs?: number;
+  maxAutoRetryWaitMs?: number;
+  sleepFn?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  fallbackModelResolver?: (activeModel: string) => string | null;
+  streamOnceFn?: typeof streamOnceWithGeminiModel;
 }): Promise<StreamResult> {
-  const validPreferred =
+  const sleep = params.sleepFn ?? cancellableSleep;
+  const retryBaseMs = params.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  const maxRetryWaitMs = params.maxAutoRetryWaitMs ?? MAX_AUTO_RETRY_WAIT_MS;
+  const resolveFallback = params.fallbackModelResolver ?? resolveConfiguredFallbackModel;
+  const streamOnce = params.streamOnceFn ?? streamOnceWithGeminiModel;
+
+  const requestedPrimary =
     params.preferredModel === GEMINI_MODELS.fallback
       ? GEMINI_MODELS.fallback
       : GEMINI_MODELS.primary;
 
-  const tryOrder: Array<{ model: string; ttftMs: number; label: string }> =
-    validPreferred === GEMINI_MODELS.fallback
-      ? [
-          {
-            model: GEMINI_MODELS.fallback,
-            ttftMs: TTFT_FALLBACK_MS,
-            label: 'NOVA réfléchit...',
-          },
-        ]
-      : isPrimaryHealthy()
-      ? [
-          {
-            model: GEMINI_MODELS.primary,
-            ttftMs: TTFT_PRIMARY_MS,
-            label: 'NOVA réfléchit...',
-          },
-          {
-            model: GEMINI_MODELS.fallback,
-            ttftMs: TTFT_FALLBACK_MS,
-            label: 'Bascule automatique vers Gemini Flash Lite...',
-          },
-        ]
-      : [
-          {
-            model: GEMINI_MODELS.fallback,
-            ttftMs: TTFT_FALLBACK_MS,
-            label: 'NOVA réfléchit...',
-          },
-        ];
-
-  let lastError: unknown;
-  let emittedAnyDelta = false;
-
-  for (let i = 0; i < tryOrder.length; i += 1) {
-    const candidate = tryOrder[i];
-    if (!candidate) continue;
-
-    const maxAttempts = i === tryOrder.length - 1 ? 2 : 1;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        if (i > 0 || attempt > 0) {
-          params.callbacks.onStatus?.(candidate.label);
-        }
-        params.callbacks.onModelSelected?.(candidate.model);
-        const res = await streamOnceWithGeminiModel({
-          ai: params.ai,
-          model: candidate.model,
-          contents: params.contents,
-          systemInstruction: params.systemInstruction,
-          useWebSearch: params.useWebSearch,
-          ttftTimeoutMs: candidate.ttftMs,
-          externalSignal: params.externalSignal,
-          onDelta: (delta) => {
-            emittedAnyDelta = true;
-            params.callbacks.onDelta(delta);
-          },
-        });
-
-        return {
-          fullText: res.fullText,
-          sources: res.sources,
-          modelUsed: candidate.model,
-          latencyMs: Date.now() - params.startedAt,
-        };
-      } catch (err) {
-        lastError = err;
-        const rawMsg = err instanceof Error ? err.message : String(err);
-        if (rawMsg === 'CLIENT_ABORTED') {
-          throw err;
-        }
-        const is429 = rawMsg.toLowerCase().includes('429') || rawMsg.toLowerCase().includes('resource_exhausted');
-        // Never loop on 429 to bypass provider limits; allow at most single fallback to a different healthy model if no deltas emitted
-        const canRecover =
-          !emittedAnyDelta &&
-          !is429 &&
-          (isTransientError(err) || rawMsg.includes('TTFT_TIMEOUT'));
-        if (canRecover && attempt + 1 < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          continue;
-        }
-        if (canRecover && i < tryOrder.length - 1) {
-          if (candidate.model === GEMINI_MODELS.primary) {
-            tripPrimaryCooldown(err);
-          }
-          break;
-        }
-        throw err;
-      }
+  // Determine initial healthy model
+  let activeModel: string = requestedPrimary;
+  if (activeModel === GEMINI_MODELS.primary && !isPrimaryHealthy()) {
+    const healthyBackup = resolveFallback(GEMINI_MODELS.primary);
+    if (healthyBackup) {
+      activeModel = healthyBackup;
     }
   }
 
-  throw lastError;
+  let emittedAnyDelta = false;
+  let totalRetriesUsed = 0;
+  let rateLimitRetriesUsed = 0;
+  let sameModelRetries = 0;
+  let fallbackAttempted = false;
+  const MAX_TOTAL_RETRIES = 2;
+
+  while (true) {
+    const ttftTimeoutMs =
+      activeModel === GEMINI_MODELS.fallback ? TTFT_FALLBACK_MS : TTFT_PRIMARY_MS;
+
+    try {
+      params.callbacks.onModelSelected?.(activeModel);
+      const res = await streamOnce({
+        ai: params.ai,
+        model: activeModel,
+        contents: params.contents,
+        systemInstruction: params.systemInstruction,
+        useWebSearch: params.useWebSearch,
+        ttftTimeoutMs,
+        externalSignal: params.externalSignal,
+        onDelta: (delta) => {
+          emittedAnyDelta = true;
+          params.callbacks.onDelta(delta);
+        },
+      });
+
+      return {
+        fullText: res.fullText,
+        sources: res.sources,
+        modelUsed: activeModel,
+        latencyMs: Date.now() - params.startedAt,
+      };
+    } catch (err) {
+      const classified = classifyGeminiError(err);
+
+      // Never retry manual user cancellation
+      if (classified.category === 'aborted') {
+        throw err;
+      }
+
+      // CRITICAL: Never automatically retry once partial output was already emitted
+      if (emittedAnyDelta) {
+        throw err;
+      }
+
+      // Never retry hard quota exhaustion or invalid auth (avoid loops / bypassing limits)
+      if (classified.category === 'quota_exhausted' || classified.category === 'auth' || classified.category === 'unknown') {
+        throw err;
+      }
+
+      if (totalRetriesUsed >= MAX_TOTAL_RETRIES) {
+        if (activeModel === GEMINI_MODELS.primary && classified.category === 'unavailable') {
+          tripPrimaryCooldown(err);
+        }
+        throw err;
+      }
+
+      // If Retry-After exceeds safe short wait threshold, surface clearly without stalling/looping
+      if (classified.retryAfterMs !== null && classified.retryAfterMs > maxRetryWaitMs) {
+        throw err;
+      }
+
+      // On temporary 429 rate limit: at most 1 bounded retry respecting Retry-After, no fallback loop
+      if (classified.category === 'rate_limit') {
+        if (rateLimitRetriesUsed >= 1) {
+          throw err;
+        }
+        const progressiveMs = retryBaseMs * Math.pow(2, totalRetriesUsed);
+        const waitMs = Math.min(
+          maxRetryWaitMs,
+          Math.max(progressiveMs, classified.retryAfterMs ?? 0)
+        );
+        rateLimitRetriesUsed += 1;
+        totalRetriesUsed += 1;
+        params.callbacks.onStatus?.(
+          `Limite temporaire Gemini (429), nouvelle tentative dans ${(waitMs / 1000).toFixed(1)}s...`
+        );
+        await sleep(waitMs, params.externalSignal);
+        continue;
+      }
+
+      // On model_unavailable (404): switch directly if configured fallback exists; never retry dead model
+      if (classified.category === 'model_unavailable') {
+        const nextFallback = !fallbackAttempted ? resolveFallback(activeModel) : null;
+        if (!nextFallback) {
+          if (activeModel === GEMINI_MODELS.fallback) {
+            tripFallbackCooldown(err);
+          }
+          throw err;
+        }
+        fallbackAttempted = true;
+        totalRetriesUsed += 1;
+        activeModel = nextFallback;
+        params.callbacks.onStatus?.(`Modèle indisponible, bascule vers ${nextFallback}...`);
+        continue;
+      }
+
+      // On transient 503 / TTFT timeout / network before first token
+      const progressiveMs = retryBaseMs * Math.pow(2, totalRetriesUsed);
+      const waitMs = Math.min(
+        maxRetryWaitMs,
+        Math.max(progressiveMs, classified.retryAfterMs ?? 0)
+      );
+
+      if (sameModelRetries < 1) {
+        sameModelRetries += 1;
+        totalRetriesUsed += 1;
+        params.callbacks.onStatus?.(
+          classified.category === 'timeout'
+            ? 'Délai dépassé avant réponse, nouvelle tentative...'
+            : 'Service Gemini surchargé (503), nouvelle tentative...'
+        );
+        await sleep(waitMs, params.externalSignal);
+        continue;
+      }
+
+      const backupModel = !fallbackAttempted ? resolveFallback(activeModel) : null;
+      if (backupModel) {
+        if (activeModel === GEMINI_MODELS.primary) {
+          tripPrimaryCooldown(err);
+        }
+        fallbackAttempted = true;
+        sameModelRetries = 0;
+        totalRetriesUsed += 1;
+        activeModel = backupModel;
+        params.callbacks.onStatus?.(`Bascule vers le modèle de secours ${backupModel}...`);
+        await sleep(waitMs, params.externalSignal);
+        continue;
+      }
+
+      // No verified fallback model configured/available; allow 1 final progressive retry if under cap
+      totalRetriesUsed += 1;
+      params.callbacks.onStatus?.('Nouvelle tentative en cours...');
+      await sleep(waitMs, params.externalSignal);
+    }
+  }
+}
+
+export async function generateContentWithResilience<T>(params: {
+  ai: GoogleGenAI;
+  preferredModel?: string;
+  timeoutMs?: number;
+  retryBaseMs?: number;
+  maxAutoRetryWaitMs?: number;
+  sleepFn?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  fallbackModelResolver?: (activeModel: string) => string | null;
+  invokeModel: (targetModel: string, abortSignal: AbortSignal) => Promise<T>;
+}): Promise<{ response: T; modelUsed: string }> {
+  const sleep = params.sleepFn ?? cancellableSleep;
+  const retryBaseMs = params.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  const maxRetryWaitMs = params.maxAutoRetryWaitMs ?? MAX_AUTO_RETRY_WAIT_MS;
+  const resolveFallback = params.fallbackModelResolver ?? resolveConfiguredFallbackModel;
+  const timeoutMs = params.timeoutMs ?? GENERATE_TIMEOUT_MS;
+
+  let activeModel =
+    params.preferredModel === GEMINI_MODELS.fallback
+      ? GEMINI_MODELS.fallback
+      : isPrimaryHealthy()
+      ? GEMINI_MODELS.primary
+      : resolveFallback(GEMINI_MODELS.primary) ?? GEMINI_MODELS.primary;
+
+  let totalRetries = 0;
+  let rateLimitRetries = 0;
+  let sameModelRetries = 0;
+  let fallbackAttempted = false;
+  const MAX_TOTAL_RETRIES = 2;
+
+  while (true) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new Error('GENERATE_TIMEOUT'));
+    }, timeoutMs);
+
+    try {
+      const response = await params.invokeModel(activeModel, controller.signal);
+      return { response, modelUsed: activeModel };
+    } catch (err) {
+      const normalizedErr =
+        controller.signal.aborted && controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : err;
+      const classified = classifyGeminiError(normalizedErr);
+
+      if (
+        classified.category === 'aborted' ||
+        classified.category === 'quota_exhausted' ||
+        classified.category === 'auth' ||
+        classified.category === 'unknown' ||
+        totalRetries >= MAX_TOTAL_RETRIES
+      ) {
+        throw normalizedErr;
+      }
+
+      if (classified.retryAfterMs !== null && classified.retryAfterMs > maxRetryWaitMs) {
+        throw normalizedErr;
+      }
+
+      if (classified.category === 'rate_limit') {
+        if (rateLimitRetries >= 1) throw normalizedErr;
+        const waitMs = Math.min(
+          maxRetryWaitMs,
+          Math.max(retryBaseMs * Math.pow(2, totalRetries), classified.retryAfterMs ?? 0)
+        );
+        rateLimitRetries += 1;
+        totalRetries += 1;
+        await sleep(waitMs);
+        continue;
+      }
+
+      if (classified.category === 'model_unavailable') {
+        const nextFallback = !fallbackAttempted ? resolveFallback(activeModel) : null;
+        if (!nextFallback) {
+          if (activeModel === GEMINI_MODELS.fallback) tripFallbackCooldown(normalizedErr);
+          throw normalizedErr;
+        }
+        fallbackAttempted = true;
+        totalRetries += 1;
+        activeModel = nextFallback;
+        continue;
+      }
+
+      const waitMs = Math.min(
+        maxRetryWaitMs,
+        Math.max(retryBaseMs * Math.pow(2, totalRetries), classified.retryAfterMs ?? 0)
+      );
+
+      if (sameModelRetries < 1) {
+        sameModelRetries += 1;
+        totalRetries += 1;
+        await sleep(waitMs);
+        continue;
+      }
+
+      const backupModel = !fallbackAttempted ? resolveFallback(activeModel) : null;
+      if (backupModel) {
+        if (activeModel === GEMINI_MODELS.primary) tripPrimaryCooldown(normalizedErr);
+        fallbackAttempted = true;
+        sameModelRetries = 0;
+        totalRetries += 1;
+        activeModel = backupModel;
+        await sleep(waitMs);
+        continue;
+      }
+
+      totalRetries += 1;
+      await sleep(waitMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function streamOpenAICompatibleProvider(params: {
@@ -1039,139 +1485,130 @@ EXIGENCES STRICTES :
 5. websiteHtml :
    - Code HTML5 complet autonome (<!doctype html>...) avec CSS moderne embarqué dans <style>, polices Google Fonts, design responsive (mobile + desktop), navigation fluide, section Hero avec nom & slogan, section Services & Tarifs reprenant les 3 offres, section À propos / Méthode, formulaire de contact fonctionnel côté client (sans rechargement de page, avec message de confirmation visuel), et footer. Utilise les couleurs exactes de brandIdentity.`;
 
-  const callGenerate = async (targetModel: string) =>
-    ai.models.generateContent({
-      model: targetModel,
-      contents: prompt,
-      config: {
-        thinkingConfig: {
-          thinkingLevel:
-            targetModel === GEMINI_MODELS.fallback
-              ? ThinkingLevel.MINIMAL
-              : ThinkingLevel.LOW,
-        },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            brandIdentity: {
-              type: Type.OBJECT,
-              properties: {
-                brandName: { type: Type.STRING },
-                slogan: { type: Type.STRING },
-                positioning: { type: Type.STRING },
-                toneOfVoice: { type: Type.STRING },
-                targetAudience: { type: Type.STRING },
-                colors: {
-                  type: Type.OBJECT,
-                  properties: {
-                    primary: { type: Type.STRING },
-                    secondary: { type: Type.STRING },
-                    accent: { type: Type.STRING },
-                    background: { type: Type.STRING },
-                    text: { type: Type.STRING },
-                  },
-                },
-                typography: {
-                  type: Type.OBJECT,
-                  properties: {
-                    displayFont: { type: Type.STRING },
-                    bodyFont: { type: Type.STRING },
-                    rationale: { type: Type.STRING },
-                  },
-                },
-                visualGuidelines: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-              },
-            },
-            logoSvg: { type: Type.STRING },
-            commercialOffer: {
-              type: Type.OBJECT,
-              properties: {
-                headline: { type: Type.STRING },
-                valueProposition: { type: Type.STRING },
-                packages: {
-                  type: Type.ARRAY,
-                  items: {
+  const { response, modelUsed: usedModel } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 45_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: {
+            thinkingLevel:
+              targetModel === GEMINI_MODELS.fallback
+                ? ThinkingLevel.MINIMAL
+                : ThinkingLevel.LOW,
+          },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              brandIdentity: {
+                type: Type.OBJECT,
+                properties: {
+                  brandName: { type: Type.STRING },
+                  slogan: { type: Type.STRING },
+                  positioning: { type: Type.STRING },
+                  toneOfVoice: { type: Type.STRING },
+                  targetAudience: { type: Type.STRING },
+                  colors: {
                     type: Type.OBJECT,
                     properties: {
-                      name: { type: Type.STRING },
-                      priceLabel: { type: Type.STRING },
-                      targetClient: { type: Type.STRING },
-                      deliverables: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                      },
-                      timeline: { type: Type.STRING },
+                      primary: { type: Type.STRING },
+                      secondary: { type: Type.STRING },
+                      accent: { type: Type.STRING },
+                      background: { type: Type.STRING },
+                      text: { type: Type.STRING },
                     },
                   },
+                  typography: {
+                    type: Type.OBJECT,
+                    properties: {
+                      displayFont: { type: Type.STRING },
+                      bodyFont: { type: Type.STRING },
+                      rationale: { type: Type.STRING },
+                    },
+                  },
+                  visualGuidelines: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
                 },
-                salesPitch: { type: Type.STRING },
               },
-            },
-            businessPlan: {
-              type: Type.OBJECT,
-              properties: {
-                executiveSummary: { type: Type.STRING },
-                financialPlan: {
-                  type: Type.OBJECT,
-                  properties: {
-                    startupCostsEur: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          item: { type: Type.STRING },
-                          amountEur: { type: Type.NUMBER },
+              logoSvg: { type: Type.STRING },
+              commercialOffer: {
+                type: Type.OBJECT,
+                properties: {
+                  headline: { type: Type.STRING },
+                  valueProposition: { type: Type.STRING },
+                  packages: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        name: { type: Type.STRING },
+                        priceLabel: { type: Type.STRING },
+                        targetClient: { type: Type.STRING },
+                        deliverables: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                        timeline: { type: Type.STRING },
+                      },
+                    },
+                  },
+                  salesPitch: { type: Type.STRING },
+                },
+              },
+              businessPlan: {
+                type: Type.OBJECT,
+                properties: {
+                  executiveSummary: { type: Type.STRING },
+                  financialPlan: {
+                    type: Type.OBJECT,
+                    properties: {
+                      startupCostsEur: {
+                        type: Type.ARRAY,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            item: { type: Type.STRING },
+                            amountEur: { type: Type.NUMBER },
+                          },
                         },
                       },
+                      monthlyFixedCostsEur: { type: Type.NUMBER },
+                      unitPriceEur: { type: Type.NUMBER },
+                      unitVariableCostEur: { type: Type.NUMBER },
+                      breakEvenClientsPerMonth: { type: Type.NUMBER },
+                      prudentScenarioNote: { type: Type.STRING },
                     },
-                    monthlyFixedCostsEur: { type: Type.NUMBER },
-                    unitPriceEur: { type: Type.NUMBER },
-                    unitVariableCostEur: { type: Type.NUMBER },
-                    breakEvenClientsPerMonth: { type: Type.NUMBER },
-                    prudentScenarioNote: { type: Type.STRING },
                   },
-                },
-                marketingStrategy: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-                firstClientsPlan: {
-                  type: Type.OBJECT,
-                  properties: {
-                    days7: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    days30: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    days90: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  marketingStrategy: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
                   },
-                },
-                keyRisks: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
+                  firstClientsPlan: {
+                    type: Type.OBJECT,
+                    properties: {
+                      days7: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      days30: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      days90: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    },
+                  },
+                  keyRisks: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
                 },
               },
+              websiteHtml: { type: Type.STRING },
             },
-            websiteHtml: { type: Type.STRING },
           },
         },
-      },
-    });
-
-  let response;
-  let usedModel: string = model;
-  try {
-    response = await callGenerate(model);
-  } catch (err) {
-    if (model === GEMINI_MODELS.primary && isTransientError(err)) {
-      tripPrimaryCooldown(err);
-      usedModel = GEMINI_MODELS.fallback;
-      response = await callGenerate(GEMINI_MODELS.fallback);
-    } else {
-      throw err;
-    }
-  }
+      }),
+  });
 
   const rawText = response.text?.trim();
   if (!rawText) {
@@ -1216,32 +1653,37 @@ export async function generateLogoSvgOnly(params: {
   }
 
   const ai = getClient(apiKey);
-  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
 
   const prompt = `Crée un logo vectoriel SVG minimaliste, moderne et mémorable pour la marque "${params.brandName}" (secteur : ${params.sector}).
 Couleurs : primaire ${params.primaryColor}, secondaire ${params.secondaryColor}.
 Style demandé : ${params.styleHint || 'Emblème géométrique épuré de niveau studio design'}.
 Retourne uniquement un JSON avec la propriété "logoSvg" contenant un SVG valide viewBox="0 0 512 512" (sans script, sans lien externe, géométrie nette et équilibrée).`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          logoSvg: { type: Type.STRING },
+  const { response, modelUsed } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 25_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              logoSvg: { type: Type.STRING },
+            },
+          },
         },
-      },
-    },
+      }),
   });
 
   const parsed = JSON.parse((response.text || '{}').trim()) as { logoSvg?: string };
   return {
     logoSvg: sanitizeSvgLogo(parsed.logoSvg || '', params.brandName, params.primaryColor),
-    modelUsed: model,
+    modelUsed,
   };
 }
 
@@ -1262,7 +1704,6 @@ export async function regenerateWebsiteHtmlOnly(params: {
   }
 
   const ai = getClient(apiKey);
-  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
 
   const prompt = `Développe une page web HTML5 complète, autonome, responsive et professionnelle en français pour :
 - Marque : ${params.brandName}
@@ -1274,19 +1715,25 @@ export async function regenerateWebsiteHtmlOnly(params: {
 
 Retourne un JSON { "websiteHtml": "<!doctype html>..." }.`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          websiteHtml: { type: Type.STRING },
+  const { response, modelUsed } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 35_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              websiteHtml: { type: Type.STRING },
+            },
+          },
         },
-      },
-    },
+      }),
   });
 
   const parsed = JSON.parse((response.text || '{}').trim()) as { websiteHtml?: string };
@@ -1297,7 +1744,7 @@ Retourne un JSON { "websiteHtml": "<!doctype html>..." }.`;
       `<body$1><div style="display:none" aria-hidden="true">${params.logoSvg}</div>`
     );
   }
-  return { websiteHtml: html, modelUsed: model };
+  return { websiteHtml: html, modelUsed };
 }
 
 export async function generateMarketingContent(params: {
@@ -1313,7 +1760,6 @@ export async function generateMarketingContent(params: {
   }
 
   const ai = getClient(apiKey);
-  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
 
   const formatLabels: Record<string, string> = {
     tiktok_script: 'Script TikTok percutant (accroche 3s, corps, CTA)',
@@ -1339,19 +1785,25 @@ Génère directement le contenu prêt à publier/éditer pour :
 
 Sois concret, structuré en Markdown propre, sans blabla introductif inutile.`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    },
+  const { response, modelUsed } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 25_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      }),
   });
 
   const text = response.text?.trim();
   if (!text) {
     throw new Error('Contenu vide retourné par Gemini.');
   }
-  return { content: text, modelUsed: model };
+  return { content: text, modelUsed };
 }
 
 export async function generateVideoStoryboard(params: {
@@ -1367,7 +1819,6 @@ export async function generateVideoStoryboard(params: {
   }
 
   const ai = getClient(apiKey);
-  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
   const sceneCount = params.durationTargetSec >= 40 ? 6 : 4;
 
   const prompt = `Tu es réalisateur et monteur vidéo senior.
@@ -1388,39 +1839,45 @@ Chaque scène doit avoir :
 - durationSec (nombre entier entre 3 et 10)
 - accentColor (couleur hexadécimale ex: "#3B82F6" ou "#7C3AED")`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          format: { type: Type.STRING },
-          hook: { type: Type.STRING },
-          callToAction: { type: Type.STRING },
-          scenes: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                title: { type: Type.STRING },
-                shotType: { type: Type.STRING },
-                visualDirection: { type: Type.STRING },
-                onScreenText: { type: Type.STRING },
-                voiceover: { type: Type.STRING },
-                subtitle: { type: Type.STRING },
-                durationSec: { type: Type.NUMBER },
-                accentColor: { type: Type.STRING },
+  const { response, modelUsed } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 30_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              format: { type: Type.STRING },
+              hook: { type: Type.STRING },
+              callToAction: { type: Type.STRING },
+              scenes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    title: { type: Type.STRING },
+                    shotType: { type: Type.STRING },
+                    visualDirection: { type: Type.STRING },
+                    onScreenText: { type: Type.STRING },
+                    voiceover: { type: Type.STRING },
+                    subtitle: { type: Type.STRING },
+                    durationSec: { type: Type.NUMBER },
+                    accentColor: { type: Type.STRING },
+                  },
+                },
               },
             },
           },
         },
-      },
-    },
+      }),
   });
 
   const parsed = JSON.parse((response.text || '{}').trim()) as VideoStoryboard;
@@ -1444,7 +1901,7 @@ Chaque scène doit avoir :
       callToAction: parsed.callToAction || '',
       scenes: normalizedScenes,
     },
-    modelUsed: model,
+    modelUsed,
   };
 }
 
@@ -1461,7 +1918,6 @@ export async function generateStructuredDocument(params: {
   }
 
   const ai = getClient(apiKey);
-  const model = isPrimaryHealthy() ? GEMINI_MODELS.primary : GEMINI_MODELS.fallback;
 
   const prompt = `Rédige un document professionnel complet en Markdown en français.
 Type de document : ${params.docType}
@@ -1474,17 +1930,23 @@ ${params.context}
 RÈGLE DE SÉCURITÉ & FIABILITÉ ABSOLUE :
 Ne JAMAIS inventer de numéro SIRET, SIREN, TVA intracommunautaire, IBAN, BIC, adresse postale, téléphone ou email s'ils n'ont pas été fournis ci-dessus. Indique explicitement [À COMPLÉTER] pour toute information administrative ou bancaire manquante.`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    },
+  const { response, modelUsed } = await generateContentWithResilience({
+    ai,
+    timeoutMs: 30_000,
+    invokeModel: (targetModel, abortSignal) =>
+      ai.models.generateContent({
+        model: targetModel,
+        contents: prompt,
+        config: {
+          abortSignal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      }),
   });
 
   const text = response.text?.trim();
   if (!text) {
     throw new Error('Document vide retourné par Gemini.');
   }
-  return { contentMarkdown: text, modelUsed: model };
+  return { contentMarkdown: text, modelUsed };
 }

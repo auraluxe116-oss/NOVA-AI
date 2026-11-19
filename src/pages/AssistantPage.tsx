@@ -106,7 +106,10 @@ export function AssistantPage({
   const [lastFailedRequest, setLastFailedRequest] = useState<{
     prompt: string;
     attachment: AttachmentPayload | null;
+    errorCode?: string | null;
+    retryAfterSec?: number | null;
   } | null>(null);
+  const [retryCountdownSec, setRetryCountdownSec] = useState(0);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [loadingConv, setLoadingConv] = useState(false);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
@@ -138,6 +141,14 @@ export function AssistantPage({
       abortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (retryCountdownSec <= 0) return;
+    const timer = setInterval(() => {
+      setRetryCountdownSec((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [retryCountdownSec]);
 
   const loadConversationsList = async () => {
     if (!user) {
@@ -200,6 +211,7 @@ export function AssistantPage({
     setLoadingConv(true);
     setErrorBanner(null);
     setLastFailedRequest(null);
+    setRetryCountdownSec(0);
     setMobileHistoryOpen(false);
     try {
       const detail = await fetchConversationDetail(id);
@@ -226,6 +238,7 @@ export function AssistantPage({
     setSummarizedActive(false);
     setErrorBanner(null);
     setLastFailedRequest(null);
+    setRetryCountdownSec(0);
     setMobileHistoryOpen(false);
   };
 
@@ -302,6 +315,7 @@ export function AssistantPage({
 
     setErrorBanner(null);
     setLastFailedRequest(null);
+    setRetryCountdownSec(0);
     setIsGenerating(true);
     setStatusLabel('NOVA réfléchit...');
 
@@ -451,8 +465,19 @@ export function AssistantPage({
           err instanceof ApiError || err instanceof Error
             ? err.message
             : 'Le serveur IA est momentanément indisponible.';
+        const errCode = err instanceof ApiError ? err.code : 'AI_ERROR';
+        const waitSec =
+          err instanceof ApiError && err.retryAfterSec && err.retryAfterSec > 0
+            ? err.retryAfterSec
+            : 0;
         setErrorBanner(msg);
-        setLastFailedRequest({ prompt: cleanPrompt, attachment: currentAttachment });
+        setRetryCountdownSec(waitSec);
+        setLastFailedRequest({
+          prompt: cleanPrompt,
+          attachment: currentAttachment,
+          errorCode: errCode,
+          retryAfterSec: waitSec || null,
+        });
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId
@@ -460,7 +485,10 @@ export function AssistantPage({
                   ...m,
                   isStreaming: false,
                   isError: true,
-                  content: msg,
+                  errorCode: errCode,
+                  errorMessage: msg,
+                  retryAfterSec: waitSec || null,
+                  content: m.content.trim().length > 0 ? m.content : msg,
                 }
               : m
           )
@@ -508,8 +536,21 @@ export function AssistantPage({
 
   const handleRegenerateLast = () => {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-    if (!lastUser || isGenerating) return;
+    if (!lastUser || isGenerating || inFlightRef.current) return;
     void sendMessage(lastUser.content, { isRetry: true, overrideAttachment: null });
+  };
+
+  const restoreFailedRequestToInput = () => {
+    if (!lastFailedRequest || isGenerating) return;
+    setInput(lastFailedRequest.prompt);
+    if (lastFailedRequest.attachment) {
+      setAttachment(lastFailedRequest.attachment);
+    }
+    setErrorBanner(null);
+    setLastFailedRequest(null);
+    setRetryCountdownSec(0);
+    setMessages((prev) => prev.filter((m) => !m.isError));
+    setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
   const renderSidebarBody = () => (
@@ -795,8 +836,9 @@ export function AssistantPage({
                     <button
                       key={item.category}
                       type="button"
+                      disabled={isGenerating || loadingConv}
                       onClick={() => void sendMessage(item.prompt)}
-                      className="rounded-xl border border-[#232332] bg-[#111117] p-4 text-left hover:border-[#7C3AED]/70 transition-colors"
+                      className="rounded-xl border border-[#232332] bg-[#111117] p-4 text-left hover:border-[#7C3AED]/70 disabled:opacity-50 transition-colors"
                     >
                       <p className="text-xs font-semibold uppercase tracking-wider text-[#A78BFA]">
                         {item.category}
@@ -844,25 +886,49 @@ export function AssistantPage({
                             <span>{statusLabel}</span>
                           </div>
                         ) : msg.isError ? (
-                          <div className="flex items-start gap-2.5 text-sm text-red-300">
-                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
-                            <div className="space-y-2">
-                              <p>{msg.content}</p>
-                              {lastFailedRequest && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void sendMessage(lastFailedRequest.prompt, {
-                                      isRetry: true,
-                                      overrideAttachment: lastFailedRequest.attachment,
-                                    })
-                                  }
-                                  className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20"
-                                >
-                                  <RotateCcw className="h-3.5 w-3.5" />
-                                  Réessayer
-                                </button>
-                              )}
+                          <div className="space-y-3">
+                            {msg.errorMessage && msg.content !== msg.errorMessage && (
+                              <div className="space-y-2">
+                                <MarkdownRenderer content={msg.content} sources={msg.sources} />
+                                <p className="text-[11px] text-amber-300/90">
+                                  Réponse partielle affichée avant l&apos;erreur : aucune relance
+                                  automatique n&apos;a été effectuée pour éviter les doublons.
+                                </p>
+                              </div>
+                            )}
+                            <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-200">
+                              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+                              <div className="space-y-2.5">
+                                <p>{msg.errorMessage || msg.content}</p>
+                                {lastFailedRequest && (
+                                  <div className="flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={isGenerating || retryCountdownSec > 0}
+                                      onClick={() =>
+                                        void sendMessage(lastFailedRequest.prompt, {
+                                          isRetry: true,
+                                          overrideAttachment: lastFailedRequest.attachment,
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
+                                    >
+                                      <RotateCcw className="h-3.5 w-3.5" />
+                                      {retryCountdownSec > 0
+                                        ? `Réessayer (${retryCountdownSec}s)`
+                                        : 'Réessayer'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isGenerating}
+                                      onClick={restoreFailedRequestToInput}
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-[#32324A] bg-[#161622] px-3 py-1.5 text-xs font-medium text-[#D6D6E4] hover:text-white disabled:opacity-50"
+                                    >
+                                      Remettre dans le champ
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -886,8 +952,9 @@ export function AssistantPage({
                             {isLastAssistant && (
                               <button
                                 type="button"
+                                disabled={isGenerating}
                                 onClick={handleRegenerateLast}
-                                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#9E9EB5] hover:bg-[#171721] hover:text-white"
+                                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#9E9EB5] hover:bg-[#171721] hover:text-white disabled:opacity-45"
                               >
                                 <RefreshCw className="h-3.5 w-3.5" />
                                 Régénérer
@@ -909,15 +976,43 @@ export function AssistantPage({
         <div className="border-t border-[#1F1F2D] bg-[#0B0B10] px-4 py-3 sm:px-6">
           <div className="mx-auto max-w-3xl space-y-2">
             {errorBanner && (
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                <span>{errorBanner}</span>
-                <button
-                  type="button"
-                  onClick={() => setErrorBanner(null)}
-                  className="text-red-300 hover:text-white"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                <span className="flex-1 min-w-[200px]">{errorBanner}</span>
+                <div className="flex items-center gap-2">
+                  {lastFailedRequest && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isGenerating || retryCountdownSec > 0}
+                        onClick={() =>
+                          void sendMessage(lastFailedRequest.prompt, {
+                            isRetry: true,
+                            overrideAttachment: lastFailedRequest.attachment,
+                          })
+                        }
+                        className="rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                      >
+                        {retryCountdownSec > 0 ? `Réessayer (${retryCountdownSec}s)` : 'Réessayer'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={restoreFailedRequestToInput}
+                        className="rounded border border-[#36364D] bg-[#161622] px-2.5 py-1 font-medium text-[#D6D6E4] hover:text-white disabled:opacity-50"
+                      >
+                        Éditer
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setErrorBanner(null)}
+                    aria-label="Fermer l'alerte"
+                    className="text-red-300 hover:text-white"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             )}
 
@@ -982,7 +1077,7 @@ export function AssistantPage({
               ) : (
                 <button
                   type="submit"
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || loadingConv}
                   aria-label="Envoyer"
                   className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#7C3AED] text-white hover:bg-[#6D28D9] disabled:opacity-40 transition-colors"
                 >

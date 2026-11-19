@@ -124,16 +124,30 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
+function sendMappedGeminiJsonError(res: express.Response, err: unknown): void {
+  const mapped = mapGeminiErrorMessage(err);
+  if (mapped.retryAfterSec) {
+    res.setHeader('Retry-After', String(mapped.retryAfterSec));
+  }
+  res.status(mapped.status).json({
+    code: mapped.code,
+    error: mapped.message,
+    retryAfterSec: mapped.retryAfterSec ?? null,
+  });
+}
+
 export interface CreateAppOptions {
   streamConversation?: typeof streamConversationResponse;
   summarizeHistory?: typeof summarizeConversationHistory;
   providerKeyChecker?: typeof getProviderApiKey;
+  generateCompanySuite?: typeof generateCompanyCreationSuite;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const runConversationStream = options.streamConversation ?? streamConversationResponse;
   const runSummarizeHistory = options.summarizeHistory ?? summarizeConversationHistory;
   const resolveProviderKey = options.providerKeyChecker ?? getProviderApiKey;
+  const runCompanySuite = options.generateCompanySuite ?? generateCompanyCreationSuite;
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
@@ -639,9 +653,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       60_000
     );
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
-        error: `Cadence de requêtes trop rapide (anti-flood). Patiente ${burst.retryAfterSec} secondes.`,
+        retryAfterSec: burst.retryAfterSec,
+        error: `Cadence de requêtes trop rapide (anti-flood). Patientez ${burst.retryAfterSec} seconde(s).`,
       });
       return;
     }
@@ -882,8 +898,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const mapped = mapGeminiErrorMessage(err);
       sendSseEvent(res, {
         type: 'error',
+        status: mapped.status,
         code: mapped.code,
         error: mapped.message,
+        retryAfterSec: mapped.retryAfterSec ?? null,
       });
       res.end();
     } finally {
@@ -934,9 +952,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       60_000
     );
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
-        error: `Cadence élevée. Patiente ${burst.retryAfterSec} secondes.`,
+        retryAfterSec: burst.retryAfterSec,
+        error: `Cadence élevée. Patientez ${burst.retryAfterSec} seconde(s).`,
       });
       return;
     }
@@ -1057,8 +1077,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const mapped = mapGeminiErrorMessage(err);
       sendSseEvent(res, {
         type: 'error',
+        status: mapped.status,
         code: mapped.code,
         error: mapped.message,
+        retryAfterSec: mapped.retryAfterSec ?? null,
       });
       res.end();
     } finally {
@@ -1091,7 +1113,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   app.post('/api/business/company-suite', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1103,8 +1125,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`company:burst:${user ? user.id : ipHash}`, 10, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes avant de relancer une génération complète.`,
       });
       return;
@@ -1130,7 +1154,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }
 
     try {
-      const { suite, modelUsed } = await generateCompanyCreationSuite({
+      const { suite, modelUsed } = await runCompanySuite({
         projectTitle,
         sector,
         budgetEur: Number.isFinite(budgetEur) ? Math.max(0, budgetEur) : 0,
@@ -1172,8 +1196,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         quota: buildQuotaSnapshot(user, ipHash),
       });
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 
@@ -1221,8 +1244,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       }
       res.json({ logoSvg, modelUsed });
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 
@@ -1278,8 +1300,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       }
       res.json({ websiteHtml, modelUsed });
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 
@@ -1403,8 +1424,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       });
       res.json(result);
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 
@@ -1452,8 +1472,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       });
       res.json(result);
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 
@@ -1559,8 +1578,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
       res.json({ contentMarkdown, modelUsed, document: saved });
     } catch (err) {
-      const mapped = mapGeminiErrorMessage(err);
-      res.status(mapped.status).json({ code: mapped.code, error: mapped.message });
+      sendMappedGeminiJsonError(res, err);
     }
   });
 

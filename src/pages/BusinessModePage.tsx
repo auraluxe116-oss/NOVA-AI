@@ -1791,8 +1791,17 @@ export function BusinessModePage({
                 </label>
 
                 {errorMessage && (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-200">
-                    {errorMessage}
+                  <div className="space-y-2 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-200">
+                    <p>{errorMessage}</p>
+                    <button
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => void runModuleGeneration()}
+                      className="inline-flex items-center gap-1.5 rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Réessayer
+                    </button>
                   </div>
                 )}
 
