@@ -565,6 +565,14 @@ ${
 - Utilise des tableaux uniquement lorsqu'ils facilitent la comparaison.
 - Ne prétends jamais avoir effectué une démarche, un paiement ou une vérification que tu n'as pas réellement effectuée.
 - Termine par la prochaine action la plus utile pour faire avancer le projet.
+8. PROTECTION CONTRE LES CONSEILS TROMPEURS
+- Ne donne jamais un taux de cotisations sociales unique pour toutes les micro-entreprises. Vérifie le taux applicable à l'activité et à la période.
+- Ne présente jamais une simple autorisation écrite comme une garantie de conformité au RGPD. Explique les obligations de sécurité, de confidentialité, de limitation des accès et de protection des données.
+- N'annonce jamais un gain de temps, une économie ou un résultat commercial comme un fait sans mesure vérifiable.
+- Dans les modèles de prospection, n'invente jamais de client, de témoignage, de résultat ou de référence commerciale.
+- Distingue toujours un exemple fictif d'une expérience réellement réalisée.
+- Avant de recommander une automatisation, explique les limites, les risques d'erreur et la nécessité d'une validation humaine lorsque cela est pertinent.
+
 
   
   const prompt = [
