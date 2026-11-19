@@ -3,7 +3,7 @@ import type { ExperienceLevel, PlanTier, SourceLink } from './types.js';
 
 export const GEMINI_MODELS = {
   primary: 'gemini-4-hydrogen',
-  fallback: 'gemini-3.1-flash-lite',
+  fallback: 'gemini-3.5-flash-lite',
 } as const;
 
 const TTFT_PRIMARY_MS = 5_500;
