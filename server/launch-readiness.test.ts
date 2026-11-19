@@ -15,6 +15,8 @@ process.env.SQLITE_DB_PATH = tempDbPath;
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
 delete process.env.STRIPE_ALLOW_LIVE;
+delete process.env.STRIPE_PRICE_PRO;
+delete process.env.STRIPE_PRICE_BUSINESS;
 delete process.env.STRIPE_PRICE_PRO_MONTHLY;
 delete process.env.STRIPE_PRICE_PRO_ANNUAL;
 delete process.env.STRIPE_PRICE_BUSINESS_MONTHLY;
@@ -36,6 +38,7 @@ interface MockSessionState {
   payment_status: 'paid' | 'unpaid';
   amount_total: number;
   currency: string;
+  lineItems?: Stripe.Checkout.SessionCreateParams.LineItem[];
   metadata: Record<string, string>;
 }
 
@@ -50,6 +53,9 @@ function createTestStripeClient(): Stripe {
         id: priceId,
         unit_amount: priceId.includes('business') ? 1990 : 990,
         currency: 'eur',
+        recurring: {
+          interval: priceId.includes('annual') ? 'year' : 'month',
+        },
       }),
     },
     checkout: {
@@ -70,6 +76,7 @@ function createTestStripeClient(): Stripe {
             payment_status: 'unpaid',
             amount_total: 990,
             currency: 'eur',
+            lineItems: params.line_items,
             metadata: (params.metadata as Record<string, string>) ?? {},
           });
           return {
@@ -650,3 +657,137 @@ test('Stripe abonnements : verrou sécurité live, tarifs configurables, mode te
   delete process.env.STRIPE_PRO_MONTHLY_CENTS;
   delete process.env.STRIPE_BUSINESS_MONTHLY_CENTS;
 });
+
+test('Stripe configuration Vercel : lecture exacte de STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_PRO et STRIPE_PRICE_BUSINESS', async () => {
+  const reg = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'vercel-stripe@nova-test.local',
+      password: 'PasswordStripe123!',
+      displayName: 'Vercel Stripe User',
+    }),
+  });
+  const regJson = (await reg.json()) as { user: { id: string } };
+  const cookie = (reg.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
+  // Simuler exactement les 4 variables Vercel (y compris guillemets éventuels autour d'un Price ID)
+  process.env.STRIPE_SECRET_KEY = 'sk_test_vercel_exact_4_vars';
+  process.env.STRIPE_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+  process.env.STRIPE_PRICE_PRO = '"price_test_pro_single"';
+  process.env.STRIPE_PRICE_BUSINESS = 'price_test_business_single';
+
+  const statusText = await (await fetch(`${baseUrl}/api/stripe/status`)).text();
+  assert.doesNotMatch(statusText, /sk_test_|whsec_/);
+  const statusJson = JSON.parse(statusText) as {
+    stripeConfigured: boolean;
+    stripeMode: string;
+    webhookConfigured: boolean;
+    checkoutReady: boolean;
+    usingConfiguredPriceIds: boolean;
+    prices: {
+      proMonthly: boolean;
+      proAnnual: boolean;
+      businessMonthly: boolean;
+      businessAnnual: boolean;
+    };
+    catalog: {
+      pro: { monthlyCents: number | null; monthlyConfigured: boolean; annualConfigured: boolean; source: string };
+      business: { monthlyCents: number | null; monthlyConfigured: boolean; annualConfigured: boolean; source: string };
+    };
+  };
+
+  assert.equal(statusJson.stripeConfigured, true);
+  assert.equal(statusJson.stripeMode, 'test');
+  assert.equal(statusJson.webhookConfigured, true);
+  assert.equal(statusJson.checkoutReady, true);
+  assert.equal(statusJson.usingConfiguredPriceIds, true);
+  assert.equal(statusJson.prices.proMonthly, true);
+  assert.equal(statusJson.prices.businessMonthly, true);
+  assert.equal(statusJson.catalog.pro.monthlyConfigured, true);
+  assert.equal(statusJson.catalog.pro.monthlyCents, 990);
+  assert.equal(statusJson.catalog.pro.source, 'stripe_price');
+  assert.equal(statusJson.catalog.business.monthlyConfigured, true);
+  assert.equal(statusJson.catalog.business.monthlyCents, 1990);
+  assert.equal(statusJson.catalog.business.source, 'stripe_price');
+
+  // /api/health reflète aussi checkoutReady=true sans aucune fuite de secret
+  const healthText = await (await fetch(`${baseUrl}/api/health`)).text();
+  assert.doesNotMatch(healthText, /sk_test_|whsec_/);
+  const healthJson = JSON.parse(healthText) as {
+    stripeConfigured: boolean;
+    webhookConfigured: boolean;
+    checkoutReady: boolean;
+  };
+  assert.equal(healthJson.stripeConfigured, true);
+  assert.equal(healthJson.webhookConfigured, true);
+  assert.equal(healthJson.checkoutReady, true);
+
+  // Checkout PRO utilise exactement le Price ID STRIPE_PRICE_PRO (nettoyé)
+  const proCheckoutRes = await fetch(`${baseUrl}/api/stripe/create-checkout-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ plan: 'pro', interval: 'monthly' }),
+  });
+  assert.equal(proCheckoutRes.status, 200);
+  const proCheckout = (await proCheckoutRes.json()) as { sessionId: string; mode: string };
+  assert.equal(proCheckout.mode, 'test');
+  assert.equal(mockSessions.get(proCheckout.sessionId)?.lineItems?.[0]?.price, 'price_test_pro_single');
+
+  // Checkout BUSINESS utilise exactement le Price ID STRIPE_PRICE_BUSINESS
+  const bizCheckoutRes = await fetch(`${baseUrl}/api/stripe/create-checkout-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ plan: 'business', interval: 'monthly' }),
+  });
+  assert.equal(bizCheckoutRes.status, 200);
+  const bizCheckout = (await bizCheckoutRes.json()) as { sessionId: string; mode: string };
+  assert.equal(mockSessions.get(bizCheckout.sessionId)?.lineItems?.[0]?.price, 'price_test_business_single');
+
+  // Requête annuelle lorsque seul un Price ID mensuel est configuré -> rejet sécurisé 503 STRIPE_PRICE_NOT_CONFIGURED
+  const annualMismatchRes = await fetch(`${baseUrl}/api/stripe/create-checkout-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ plan: 'pro', interval: 'annual' }),
+  });
+  assert.equal(annualMismatchRes.status, 503);
+  assert.equal(((await annualMismatchRes.json()) as { code: string }).code, 'STRIPE_PRICE_NOT_CONFIGURED');
+
+  // Webhook customer.subscription.updated avec price.id = STRIPE_PRICE_BUSINESS infère plan='business'
+  const subUpdatedRes = await sendSignedWebhook(baseUrl, {
+    id: 'evt_vercel_sub_biz_1',
+    type: 'customer.subscription.updated',
+    data: {
+      object: {
+        id: 'sub_vercel_biz_1',
+        customer: 'cus_vercel_biz_1',
+        status: 'active',
+        metadata: { userId: regJson.user.id },
+        items: {
+          data: [
+            {
+              price: {
+                id: 'price_test_business_single',
+                unit_amount: 1990,
+                recurring: { interval: 'month' },
+              },
+            },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(subUpdatedRes.status, 200);
+
+  const meAfterWebhook = (await (
+    await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: cookie } })
+  ).json()) as { user: { effectivePlan: string; subscriptionStatus: string } };
+  assert.equal(meAfterWebhook.user.effectivePlan, 'business');
+  assert.equal(meAfterWebhook.user.subscriptionStatus, 'active');
+
+  delete process.env.STRIPE_SECRET_KEY;
+  delete process.env.STRIPE_WEBHOOK_SECRET;
+  delete process.env.STRIPE_PRICE_PRO;
+  delete process.env.STRIPE_PRICE_BUSINESS;
+});
+

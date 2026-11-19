@@ -174,6 +174,22 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
     window.location.assign(url);
   };
 
+  const hasMonthlyPrices = Boolean(
+    stripeStatus?.catalog?.pro?.monthlyConfigured ||
+      stripeStatus?.catalog?.business?.monthlyConfigured
+  );
+  const hasAnnualPrices = Boolean(
+    stripeStatus?.catalog?.pro?.annualConfigured ||
+      stripeStatus?.catalog?.business?.annualConfigured
+  );
+  const onlyMonthlyConfigured = Boolean(stripeStatus && hasMonthlyPrices && !hasAnnualPrices);
+  const onlyAnnualConfigured = Boolean(stripeStatus && hasAnnualPrices && !hasMonthlyPrices);
+  const effectiveInterval: BillingInterval = onlyMonthlyConfigured
+    ? 'monthly'
+    : onlyAnnualConfigured
+    ? 'annual'
+    : interval;
+
   const handleSubscribe = async (plan: Exclude<PlanTier, 'free'>) => {
     setFeedback(null);
     setCheckoutUrlFallback(null);
@@ -188,7 +204,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         redirectToStripe(portal.url);
         return;
       }
-      const session = await createStripeCheckout(plan, interval);
+      const session = await createStripeCheckout(plan, effectiveInterval);
       redirectToStripe(session.url);
     } catch (err) {
       const msg =
@@ -201,8 +217,8 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
     }
   };
 
-  const proPrice = getDisplayPrice(stripeStatus?.catalog?.pro, interval);
-  const businessPrice = getDisplayPrice(stripeStatus?.catalog?.business, interval);
+  const proPrice = getDisplayPrice(stripeStatus?.catalog?.pro, effectiveInterval);
+  const businessPrice = getDisplayPrice(stripeStatus?.catalog?.business, effectiveInterval);
   const liveLocked =
     stripeStatus?.stripeMode === 'live' && !stripeStatus.liveAuthorized;
 
@@ -221,30 +237,40 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         </p>
 
         {/* Billing Cadence Switch */}
-        <div className="inline-flex items-center rounded-xl border border-[#232332] bg-[#111117] p-1">
-          <button
-            type="button"
-            onClick={() => setInterval('monthly')}
-            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
-              interval === 'monthly'
-                ? 'bg-[#7C3AED] text-white'
-                : 'text-[#A8A8BE] hover:text-white'
-            }`}
-          >
-            Mensuel
-          </button>
-          <button
-            type="button"
-            onClick={() => setInterval('annual')}
-            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
-              interval === 'annual'
-                ? 'bg-[#7C3AED] text-white'
-                : 'text-[#A8A8BE] hover:text-white'
-            }`}
-          >
-            Annuel
-          </button>
-        </div>
+        {onlyMonthlyConfigured ? (
+          <div className="inline-flex items-center rounded-xl border border-[#232332] bg-[#111117] px-4 py-2 text-xs font-semibold text-[#C4B5FD]">
+            Facturation mensuelle sans engagement
+          </div>
+        ) : onlyAnnualConfigured ? (
+          <div className="inline-flex items-center rounded-xl border border-[#232332] bg-[#111117] px-4 py-2 text-xs font-semibold text-[#C4B5FD]">
+            Facturation annuelle
+          </div>
+        ) : (
+          <div className="inline-flex items-center rounded-xl border border-[#232332] bg-[#111117] p-1">
+            <button
+              type="button"
+              onClick={() => setInterval('monthly')}
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
+                effectiveInterval === 'monthly'
+                  ? 'bg-[#7C3AED] text-white'
+                  : 'text-[#A8A8BE] hover:text-white'
+              }`}
+            >
+              Mensuel
+            </button>
+            <button
+              type="button"
+              onClick={() => setInterval('annual')}
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
+                effectiveInterval === 'annual'
+                  ? 'bg-[#7C3AED] text-white'
+                  : 'text-[#A8A8BE] hover:text-white'
+              }`}
+            >
+              Annuel
+            </button>
+          </div>
+        )}
       </div>
 
       {stripeStatus?.stripeConfigured && stripeStatus.stripeMode === 'test' && (
@@ -287,9 +313,12 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               Aucun tarif inventé n&apos;est facturé. Configurez{' '}
               <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> (commencez en
               mode test <code className="font-mono text-[#C4B5FD]">sk_test_...</code>),{' '}
-              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> et vos{' '}
-              <code className="font-mono text-[#C4B5FD]">STRIPE_PRICE_*</code> pour activer les
-              formules Pro et Business.
+              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> ainsi que{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_PRICE_PRO</code> et{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_PRICE_BUSINESS</code> (ou leurs
+              variantes <code className="font-mono text-[#C4B5FD]">_MONTHLY</code> /{' '}
+              <code className="font-mono text-[#C4B5FD]">_ANNUAL</code>) pour activer les formules
+              Pro et Business.
             </p>
           </div>
         </div>

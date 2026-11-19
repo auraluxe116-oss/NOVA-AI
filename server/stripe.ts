@@ -18,9 +18,18 @@ import type {
 } from './types.js';
 
 function cleanEnv(name: string): string | null {
-  const val = process.env[name]?.trim();
+  let val = process.env[name]?.trim();
+  if (!val) return null;
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    val = val.slice(1, -1).trim();
+  }
   if (
     !val ||
+    val === 'price_pro' ||
+    val === 'price_business' ||
     val === 'price_pro_monthly' ||
     val === 'price_pro_annual' ||
     val === 'price_business_monthly' ||
@@ -31,6 +40,23 @@ function cleanEnv(name: string): string | null {
     return null;
   }
   return val;
+}
+
+type StripeRecurringInterval = 'month' | 'year' | null;
+
+function getExplicitIntervalPriceId(
+  plan: Exclude<PlanTier, 'free'>,
+  interval: BillingInterval
+): string | null {
+  if (plan === 'pro' && interval === 'monthly') return cleanEnv('STRIPE_PRICE_PRO_MONTHLY');
+  if (plan === 'pro' && interval === 'annual') return cleanEnv('STRIPE_PRICE_PRO_ANNUAL');
+  if (plan === 'business' && interval === 'monthly') return cleanEnv('STRIPE_PRICE_BUSINESS_MONTHLY');
+  if (plan === 'business' && interval === 'annual') return cleanEnv('STRIPE_PRICE_BUSINESS_ANNUAL');
+  return null;
+}
+
+function getSinglePlanPriceId(plan: Exclude<PlanTier, 'free'>): string | null {
+  return cleanEnv(plan === 'pro' ? 'STRIPE_PRICE_PRO' : 'STRIPE_PRICE_BUSINESS');
 }
 
 function getStripeClient(override?: Stripe): Stripe | null {
@@ -53,13 +79,23 @@ export function isLiveModeAuthorized(): boolean {
 
 export function getPriceIdForPlan(
   plan: Exclude<PlanTier, 'free'>,
-  interval: BillingInterval
+  interval: BillingInterval,
+  singlePriceRecurringHint?: StripeRecurringInterval
 ): string | null {
-  if (plan === 'pro' && interval === 'monthly') return cleanEnv('STRIPE_PRICE_PRO_MONTHLY');
-  if (plan === 'pro' && interval === 'annual') return cleanEnv('STRIPE_PRICE_PRO_ANNUAL');
-  if (plan === 'business' && interval === 'monthly') return cleanEnv('STRIPE_PRICE_BUSINESS_MONTHLY');
-  if (plan === 'business' && interval === 'annual') return cleanEnv('STRIPE_PRICE_BUSINESS_ANNUAL');
-  return null;
+  const explicit = getExplicitIntervalPriceId(plan, interval);
+  if (explicit) return explicit;
+
+  const singlePriceId = getSinglePlanPriceId(plan);
+  if (!singlePriceId) return null;
+
+  const cachedHint = priceCache.get(singlePriceId)?.recurringInterval ?? null;
+  const effectiveHint =
+    singlePriceRecurringHint !== undefined ? singlePriceRecurringHint : cachedHint;
+
+  if (effectiveHint === 'year') {
+    return interval === 'annual' ? singlePriceId : null;
+  }
+  return interval === 'monthly' ? singlePriceId : null;
 }
 
 export function getConfiguredAmountCentsForPlan(
@@ -110,18 +146,29 @@ export interface StripeConfigStatusPayload {
   };
 }
 
-const priceCache = new Map<string, { amount: number | null; currency: string; expiresAt: number }>();
+const priceCache = new Map<
+  string,
+  {
+    amount: number | null;
+    currency: string;
+    recurringInterval: StripeRecurringInterval;
+    expiresAt: number;
+  }
+>();
+
+interface ResolvedPriceMeta {
+  amountCents: number | null;
+  currency: string;
+  configured: boolean;
+  recurringInterval: StripeRecurringInterval;
+  source: 'stripe_price' | 'env_cents' | 'unconfigured';
+}
 
 async function resolveStripePriceMeta(
   stripe: Stripe | null,
   priceId: string | null,
   fallbackEnvCents: number | null
-): Promise<{
-  amountCents: number | null;
-  currency: string;
-  configured: boolean;
-  source: 'stripe_price' | 'env_cents' | 'unconfigured';
-}> {
+): Promise<ResolvedPriceMeta> {
   if (priceId && stripe) {
     const cached = priceCache.get(priceId);
     if (cached && cached.expiresAt > Date.now()) {
@@ -129,6 +176,7 @@ async function resolveStripePriceMeta(
         amountCents: cached.amount,
         currency: cached.currency,
         configured: true,
+        recurringInterval: cached.recurringInterval,
         source: 'stripe_price',
       };
     }
@@ -136,15 +184,20 @@ async function resolveStripePriceMeta(
       const price = await stripe.prices.retrieve(priceId);
       const amount = typeof price.unit_amount === 'number' ? price.unit_amount : fallbackEnvCents;
       const currency = (price.currency || 'eur').toLowerCase();
+      const rawRec = price.recurring?.interval;
+      const recurringInterval: StripeRecurringInterval =
+        rawRec === 'year' ? 'year' : rawRec === 'month' ? 'month' : null;
       priceCache.set(priceId, {
         amount,
         currency,
+        recurringInterval,
         expiresAt: Date.now() + 5 * 60_000,
       });
       return {
         amountCents: amount,
         currency,
         configured: true,
+        recurringInterval,
         source: 'stripe_price',
       };
     } catch {
@@ -152,6 +205,7 @@ async function resolveStripePriceMeta(
         amountCents: fallbackEnvCents,
         currency: 'eur',
         configured: true,
+        recurringInterval: null,
         source: 'stripe_price',
       };
     }
@@ -162,6 +216,7 @@ async function resolveStripePriceMeta(
       amountCents: fallbackEnvCents,
       currency: 'eur',
       configured: true,
+      recurringInterval: priceCache.get(priceId)?.recurringInterval ?? null,
       source: 'stripe_price',
     };
   }
@@ -171,6 +226,7 @@ async function resolveStripePriceMeta(
       amountCents: fallbackEnvCents,
       currency: 'eur',
       configured: true,
+      recurringInterval: null,
       source: 'env_cents',
     };
   }
@@ -179,6 +235,7 @@ async function resolveStripePriceMeta(
     amountCents: null,
     currency: 'eur',
     configured: false,
+    recurringInterval: null,
     source: 'unconfigured',
   };
 }
@@ -216,7 +273,7 @@ export function getStripeConfigStatus(): StripeConfigStatusPayload {
     webhookConfigured: webhookSecretPresent,
     checkoutReady: secretKeyPresent && modeAllowed && anyPriceConfigured,
     usingConfiguredPriceIds: Boolean(
-      proMonthlyPriceId && proAnnualPriceId && bizMonthlyPriceId && bizAnnualPriceId
+      (proMonthlyPriceId || proAnnualPriceId) && (bizMonthlyPriceId || bizAnnualPriceId)
     ),
     prices: {
       proMonthly: Boolean(proMonthlyPriceId),
@@ -231,7 +288,12 @@ export function getStripeConfigStatus(): StripeConfigStatusPayload {
         currency: 'eur',
         monthlyConfigured: proMonthlyConfigured,
         annualConfigured: proAnnualConfigured,
-        source: proMonthlyPriceId || proAnnualPriceId ? 'stripe_price' : proMonthlyCents || proAnnualCents ? 'env_cents' : 'unconfigured',
+        source:
+          proMonthlyPriceId || proAnnualPriceId
+            ? 'stripe_price'
+            : proMonthlyCents || proAnnualCents
+            ? 'env_cents'
+            : 'unconfigured',
       },
       business: {
         monthlyCents: bizMonthlyCents,
@@ -239,9 +301,57 @@ export function getStripeConfigStatus(): StripeConfigStatusPayload {
         currency: 'eur',
         monthlyConfigured: bizMonthlyConfigured,
         annualConfigured: bizAnnualConfigured,
-        source: bizMonthlyPriceId || bizAnnualPriceId ? 'stripe_price' : bizMonthlyCents || bizAnnualCents ? 'env_cents' : 'unconfigured',
+        source:
+          bizMonthlyPriceId || bizAnnualPriceId
+            ? 'stripe_price'
+            : bizMonthlyCents || bizAnnualCents
+            ? 'env_cents'
+            : 'unconfigured',
       },
     },
+  };
+}
+
+async function resolvePlanPricingSnapshot(
+  stripe: Stripe,
+  plan: Exclude<PlanTier, 'free'>
+): Promise<{
+  snapshot: PlanPricingSnapshot;
+  monthlyPricePresent: boolean;
+  annualPricePresent: boolean;
+}> {
+  const explicitMonthly = getExplicitIntervalPriceId(plan, 'monthly');
+  const explicitAnnual = getExplicitIntervalPriceId(plan, 'annual');
+  const singlePriceId = getSinglePlanPriceId(plan);
+
+  const fallbackMonthlyCents = getConfiguredAmountCentsForPlan(plan, 'monthly');
+  const fallbackAnnualCents = getConfiguredAmountCentsForPlan(plan, 'annual');
+
+  const singleMeta =
+    singlePriceId && (!explicitMonthly || !explicitAnnual)
+      ? await resolveStripePriceMeta(stripe, singlePriceId, null)
+      : null;
+
+  const singleHint = singleMeta?.recurringInterval ?? null;
+  const effectiveMonthlyPriceId = getPriceIdForPlan(plan, 'monthly', singleHint);
+  const effectiveAnnualPriceId = getPriceIdForPlan(plan, 'annual', singleHint);
+
+  const [monthlyMeta, annualMeta] = await Promise.all([
+    resolveStripePriceMeta(stripe, effectiveMonthlyPriceId, fallbackMonthlyCents),
+    resolveStripePriceMeta(stripe, effectiveAnnualPriceId, fallbackAnnualCents),
+  ]);
+
+  return {
+    snapshot: {
+      monthlyCents: monthlyMeta.amountCents,
+      annualCents: annualMeta.amountCents,
+      currency: monthlyMeta.configured ? monthlyMeta.currency : annualMeta.currency,
+      monthlyConfigured: monthlyMeta.configured,
+      annualConfigured: annualMeta.configured,
+      source: monthlyMeta.configured ? monthlyMeta.source : annualMeta.source,
+    },
+    monthlyPricePresent: Boolean(effectiveMonthlyPriceId),
+    annualPricePresent: Boolean(effectiveAnnualPriceId),
   };
 }
 
@@ -252,48 +362,36 @@ export async function getResolvedStripeConfigStatus(
   const stripe = getStripeClient(stripeClientOverride);
   if (!stripe) return base;
 
-  const [proM, proA, bizM, bizA] = await Promise.all([
-    resolveStripePriceMeta(
-      stripe,
-      getPriceIdForPlan('pro', 'monthly'),
-      getConfiguredAmountCentsForPlan('pro', 'monthly')
-    ),
-    resolveStripePriceMeta(
-      stripe,
-      getPriceIdForPlan('pro', 'annual'),
-      getConfiguredAmountCentsForPlan('pro', 'annual')
-    ),
-    resolveStripePriceMeta(
-      stripe,
-      getPriceIdForPlan('business', 'monthly'),
-      getConfiguredAmountCentsForPlan('business', 'monthly')
-    ),
-    resolveStripePriceMeta(
-      stripe,
-      getPriceIdForPlan('business', 'annual'),
-      getConfiguredAmountCentsForPlan('business', 'annual')
-    ),
+  const [proResolved, bizResolved] = await Promise.all([
+    resolvePlanPricingSnapshot(stripe, 'pro'),
+    resolvePlanPricingSnapshot(stripe, 'business'),
   ]);
+
+  const anyPriceConfigured =
+    proResolved.snapshot.monthlyConfigured ||
+    proResolved.snapshot.annualConfigured ||
+    bizResolved.snapshot.monthlyConfigured ||
+    bizResolved.snapshot.annualConfigured;
+
+  const modeAllowed =
+    base.stripeMode === 'test' || (base.stripeMode === 'live' && base.liveAuthorized);
 
   return {
     ...base,
+    checkoutReady: base.stripeConfigured && modeAllowed && anyPriceConfigured,
+    usingConfiguredPriceIds: Boolean(
+      (proResolved.monthlyPricePresent || proResolved.annualPricePresent) &&
+        (bizResolved.monthlyPricePresent || bizResolved.annualPricePresent)
+    ),
+    prices: {
+      proMonthly: proResolved.monthlyPricePresent,
+      proAnnual: proResolved.annualPricePresent,
+      businessMonthly: bizResolved.monthlyPricePresent,
+      businessAnnual: bizResolved.annualPricePresent,
+    },
     catalog: {
-      pro: {
-        monthlyCents: proM.amountCents,
-        annualCents: proA.amountCents,
-        currency: proM.currency,
-        monthlyConfigured: proM.configured,
-        annualConfigured: proA.configured,
-        source: proM.configured ? proM.source : proA.source,
-      },
-      business: {
-        monthlyCents: bizM.amountCents,
-        annualCents: bizA.amountCents,
-        currency: bizM.currency,
-        monthlyConfigured: bizM.configured,
-        annualConfigured: bizA.configured,
-        source: bizM.configured ? bizM.source : bizA.source,
-      },
+      pro: proResolved.snapshot,
+      business: bizResolved.snapshot,
     },
   };
 }
@@ -338,18 +436,29 @@ export async function createCheckoutSessionForUser(params: {
     );
   }
 
-  const configuredPriceId = getPriceIdForPlan(params.plan, params.interval);
+  let singlePriceHint: StripeRecurringInterval = null;
+  const explicitPriceId = getExplicitIntervalPriceId(params.plan, params.interval);
+  const singlePriceId = !explicitPriceId ? getSinglePlanPriceId(params.plan) : null;
+  if (singlePriceId) {
+    const meta = await resolveStripePriceMeta(stripe, singlePriceId, null);
+    singlePriceHint = meta.recurringInterval;
+  }
+
+  const configuredPriceId =
+    explicitPriceId ?? getPriceIdForPlan(params.plan, params.interval, singlePriceHint);
   const configuredAmountCents = getConfiguredAmountCentsForPlan(params.plan, params.interval);
+  const planEnvUpper = params.plan.toUpperCase();
+  const intervalEnvUpper = params.interval.toUpperCase();
 
   if (mode === 'live' && !configuredPriceId) {
     throw new Error(
-      `STRIPE_PRICE_MANQUANT: En mode production, un identifiant Stripe Price officiel (STRIPE_PRICE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()}) est obligatoire.`
+      `STRIPE_PRICE_MANQUANT: En mode production, un identifiant Stripe Price officiel (STRIPE_PRICE_${planEnvUpper} ou STRIPE_PRICE_${planEnvUpper}_${intervalEnvUpper}) est obligatoire.`
     );
   }
 
   if (!configuredPriceId && configuredAmountCents === null) {
     throw new Error(
-      `STRIPE_PRICE_MANQUANT: Aucun tarif configuré pour ${params.plan.toUpperCase()} (${params.interval}). Définissez STRIPE_PRICE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()} ou STRIPE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()}_CENTS.`
+      `STRIPE_PRICE_MANQUANT: Aucun tarif configuré pour ${planEnvUpper} (${params.interval}). Définissez STRIPE_PRICE_${planEnvUpper} ou STRIPE_PRICE_${planEnvUpper}_${intervalEnvUpper} (ou STRIPE_${planEnvUpper}_${intervalEnvUpper}_CENTS en test).`
     );
   }
 
@@ -644,13 +753,15 @@ function inferPlanFromPriceId(priceId: string | undefined): PlanTier | null {
   if (!priceId) return null;
   if (
     priceId === cleanEnv('STRIPE_PRICE_PRO_MONTHLY') ||
-    priceId === cleanEnv('STRIPE_PRICE_PRO_ANNUAL')
+    priceId === cleanEnv('STRIPE_PRICE_PRO_ANNUAL') ||
+    priceId === cleanEnv('STRIPE_PRICE_PRO')
   ) {
     return 'pro';
   }
   if (
     priceId === cleanEnv('STRIPE_PRICE_BUSINESS_MONTHLY') ||
-    priceId === cleanEnv('STRIPE_PRICE_BUSINESS_ANNUAL')
+    priceId === cleanEnv('STRIPE_PRICE_BUSINESS_ANNUAL') ||
+    priceId === cleanEnv('STRIPE_PRICE_BUSINESS')
   ) {
     return 'business';
   }
