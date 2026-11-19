@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CreditCard,
+  Download,
   ExternalLink,
   FileText,
   KeyRound,
@@ -29,6 +30,7 @@ import {
   cancelStripeSubscription,
   createStripePortal,
   deleteAccountApi,
+  exportUserDataApi,
   fetchAIProviders,
   fetchStripeInvoices,
   fetchUserSubscriptions,
@@ -75,7 +77,8 @@ export function ProfilePage({
   const [error, setError] = useState<string | null>(null);
   const [newRecoveryCode, setNewRecoveryCode] = useState<string | null>(null);
 
-  // Account deletion (GDPR)
+  // Account export & deletion (GDPR)
+  const [exportingData, setExportingData] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -176,6 +179,31 @@ export function ProfilePage({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur génération code.');
+    }
+  };
+
+  const handleExportMyData = async () => {
+    setExportingData(true);
+    setError(null);
+    try {
+      const payload = await exportUserDataApi();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nova-ai-pro-donnees-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : "Impossible d'exporter vos données."
+      );
+    } finally {
+      setExportingData(false);
     }
   };
 
@@ -472,7 +500,35 @@ export function ProfilePage({
               </div>
             )}
 
-            <div className="border-t border-[#1F1F2D] pt-4">
+            <div className="border-t border-[#1F1F2D] pt-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={exportingData}
+                  onClick={() => void handleExportMyData()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#2C2C40] bg-[#171722] px-3 py-1.5 text-xs font-medium text-[#D6D6EA] hover:border-[#3B82F6] hover:text-white disabled:opacity-50"
+                >
+                  <Download className="h-3.5 w-3.5 text-[#3B82F6]" />
+                  {exportingData ? 'Préparation JSON...' : 'Exporter mes données (RGPD JSON)'}
+                </button>
+                <div className="flex items-center gap-3 text-[11px] text-[#9E9EB5]">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('confidentialite')}
+                    className="hover:text-white underline"
+                  >
+                    Confidentialité
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('mentions-legales')}
+                    className="hover:text-white underline"
+                  >
+                    Mentions légales
+                  </button>
+                </div>
+              </div>
+
               {!deleteConfirmOpen ? (
                 <button
                   type="button"
@@ -486,8 +542,8 @@ export function ProfilePage({
                 <form onSubmit={handleDeleteAccount} className="space-y-3 rounded-lg border border-red-500/35 bg-red-500/10 p-3.5 text-xs">
                   <p className="text-red-100">
                     Cette action est irréversible : toutes vos conversations, entreprises créées,
-                    sites publiés et documents seront supprimés. Saisissez votre mot de passe pour
-                    confirmer.
+                    sites publiés, journaux et documents seront supprimés. Saisissez votre mot de
+                    passe pour confirmer.
                   </p>
                   <input
                     type="password"
@@ -533,13 +589,19 @@ export function ProfilePage({
               <div className="flex items-center justify-between">
                 <span className="text-[#9E9EB5]">Formule active</span>
                 <span className="font-display font-bold uppercase text-white">
-                  {user.effectivePlan}
+                  {user.effectivePlan === 'free' ? 'GRATUIT' : user.effectivePlan.toUpperCase()}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[#9E9EB5]">Statut Stripe</span>
                 <span className="font-mono text-xs text-[#C4B5FD]">
-                  {user.subscriptionStatus}
+                  {user.subscriptionStatus === 'active'
+                    ? 'Actif'
+                    : user.subscriptionStatus === 'past_due'
+                    ? 'Paiement en retard'
+                    : user.subscriptionStatus === 'canceled'
+                    ? 'Résilié'
+                    : 'Inactif (Gratuit)'}
                 </span>
               </div>
               {user.currentPeriodEnd && (

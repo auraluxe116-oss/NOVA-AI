@@ -9,7 +9,9 @@ export type PageView =
   | 'historique'
   | 'profil'
   | 'paiement-succes'
-  | 'paiement-echec';
+  | 'paiement-echec'
+  | 'confidentialite'
+  | 'mentions-legales';
 
 export type PlanTier = 'free' | 'pro' | 'business';
 export type BillingInterval = 'monthly' | 'annual';
@@ -237,9 +239,19 @@ export interface VideoStoryboard {
   scenes: VideoScene[];
 }
 
+export interface PlanPricingSnapshot {
+  monthlyCents: number | null;
+  annualCents: number | null;
+  currency: string;
+  monthlyConfigured: boolean;
+  annualConfigured: boolean;
+  source: 'stripe_price' | 'env_cents' | 'unconfigured';
+}
+
 export interface StripeStatus {
   stripeConfigured: boolean;
   stripeMode: 'test' | 'live' | 'unconfigured';
+  liveAuthorized: boolean;
   webhookConfigured: boolean;
   checkoutReady: boolean;
   usingConfiguredPriceIds: boolean;
@@ -248,6 +260,10 @@ export interface StripeStatus {
     proAnnual: boolean;
     businessMonthly: boolean;
     businessAnnual: boolean;
+  };
+  catalog: {
+    pro: PlanPricingSnapshot;
+    business: PlanPricingSnapshot;
   };
 }
 

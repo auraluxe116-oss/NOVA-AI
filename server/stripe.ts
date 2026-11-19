@@ -33,7 +33,8 @@ function cleanEnv(name: string): string | null {
   return val;
 }
 
-function getStripeClient(): Stripe | null {
+function getStripeClient(override?: Stripe): Stripe | null {
+  if (override) return override;
   const key = cleanEnv('STRIPE_SECRET_KEY');
   if (!key) return null;
   return new Stripe(key);
@@ -44,6 +45,10 @@ export function getStripeMode(): 'test' | 'live' | 'unconfigured' {
   if (!key) return 'unconfigured';
   if (key.startsWith('sk_live_') || key.startsWith('rk_live_')) return 'live';
   return 'test';
+}
+
+export function isLiveModeAuthorized(): boolean {
+  return process.env.STRIPE_ALLOW_LIVE?.trim().toLowerCase() === 'true';
 }
 
 export function getPriceIdForPlan(
@@ -57,34 +62,239 @@ export function getPriceIdForPlan(
   return null;
 }
 
-export function getAmountCentsForPlan(
+export function getConfiguredAmountCentsForPlan(
   plan: Exclude<PlanTier, 'free'>,
   interval: BillingInterval
-): number {
-  if (plan === 'pro') {
-    return interval === 'annual' ? 9588 : 999; // 95,88 €/an ou 9,99 €/mois
-  }
-  return interval === 'annual' ? 19188 : 1999; // 191,88 €/an ou 19,99 €/mois
+): number | null {
+  const envKey =
+    plan === 'pro'
+      ? interval === 'annual'
+        ? 'STRIPE_PRO_ANNUAL_CENTS'
+        : 'STRIPE_PRO_MONTHLY_CENTS'
+      : interval === 'annual'
+      ? 'STRIPE_BUSINESS_ANNUAL_CENTS'
+      : 'STRIPE_BUSINESS_MONTHLY_CENTS';
+
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
-export function getStripeConfigStatus() {
-  const secretKeyPresent = Boolean(cleanEnv('STRIPE_SECRET_KEY'));
-  const webhookSecretPresent = Boolean(cleanEnv('STRIPE_WEBHOOK_SECRET'));
-  const prices = {
-    proMonthly: Boolean(getPriceIdForPlan('pro', 'monthly')),
-    proAnnual: Boolean(getPriceIdForPlan('pro', 'annual')),
-    businessMonthly: Boolean(getPriceIdForPlan('business', 'monthly')),
-    businessAnnual: Boolean(getPriceIdForPlan('business', 'annual')),
+export interface PlanPricingSnapshot {
+  monthlyCents: number | null;
+  annualCents: number | null;
+  currency: string;
+  monthlyConfigured: boolean;
+  annualConfigured: boolean;
+  source: 'stripe_price' | 'env_cents' | 'unconfigured';
+}
+
+export interface StripeConfigStatusPayload {
+  stripeConfigured: boolean;
+  stripeMode: 'test' | 'live' | 'unconfigured';
+  liveAuthorized: boolean;
+  webhookConfigured: boolean;
+  checkoutReady: boolean;
+  usingConfiguredPriceIds: boolean;
+  prices: {
+    proMonthly: boolean;
+    proAnnual: boolean;
+    businessMonthly: boolean;
+    businessAnnual: boolean;
   };
+  catalog: {
+    pro: PlanPricingSnapshot;
+    business: PlanPricingSnapshot;
+  };
+}
+
+const priceCache = new Map<string, { amount: number | null; currency: string; expiresAt: number }>();
+
+async function resolveStripePriceMeta(
+  stripe: Stripe | null,
+  priceId: string | null,
+  fallbackEnvCents: number | null
+): Promise<{
+  amountCents: number | null;
+  currency: string;
+  configured: boolean;
+  source: 'stripe_price' | 'env_cents' | 'unconfigured';
+}> {
+  if (priceId && stripe) {
+    const cached = priceCache.get(priceId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return {
+        amountCents: cached.amount,
+        currency: cached.currency,
+        configured: true,
+        source: 'stripe_price',
+      };
+    }
+    try {
+      const price = await stripe.prices.retrieve(priceId);
+      const amount = typeof price.unit_amount === 'number' ? price.unit_amount : fallbackEnvCents;
+      const currency = (price.currency || 'eur').toLowerCase();
+      priceCache.set(priceId, {
+        amount,
+        currency,
+        expiresAt: Date.now() + 5 * 60_000,
+      });
+      return {
+        amountCents: amount,
+        currency,
+        configured: true,
+        source: 'stripe_price',
+      };
+    } catch {
+      return {
+        amountCents: fallbackEnvCents,
+        currency: 'eur',
+        configured: true,
+        source: 'stripe_price',
+      };
+    }
+  }
+
+  if (priceId) {
+    return {
+      amountCents: fallbackEnvCents,
+      currency: 'eur',
+      configured: true,
+      source: 'stripe_price',
+    };
+  }
+
+  if (fallbackEnvCents !== null) {
+    return {
+      amountCents: fallbackEnvCents,
+      currency: 'eur',
+      configured: true,
+      source: 'env_cents',
+    };
+  }
+
+  return {
+    amountCents: null,
+    currency: 'eur',
+    configured: false,
+    source: 'unconfigured',
+  };
+}
+
+export function getStripeConfigStatus(): StripeConfigStatusPayload {
+  const secretKeyPresent = Boolean(cleanEnv('STRIPE_SECRET_KEY'));
+  const stripeMode = getStripeMode();
+  const liveAuthorized = isLiveModeAuthorized();
+  const webhookSecretPresent = Boolean(cleanEnv('STRIPE_WEBHOOK_SECRET'));
+
+  const proMonthlyPriceId = getPriceIdForPlan('pro', 'monthly');
+  const proAnnualPriceId = getPriceIdForPlan('pro', 'annual');
+  const bizMonthlyPriceId = getPriceIdForPlan('business', 'monthly');
+  const bizAnnualPriceId = getPriceIdForPlan('business', 'annual');
+
+  const proMonthlyCents = getConfiguredAmountCentsForPlan('pro', 'monthly');
+  const proAnnualCents = getConfiguredAmountCentsForPlan('pro', 'annual');
+  const bizMonthlyCents = getConfiguredAmountCentsForPlan('business', 'monthly');
+  const bizAnnualCents = getConfiguredAmountCentsForPlan('business', 'annual');
+
+  const proMonthlyConfigured = Boolean(proMonthlyPriceId || proMonthlyCents !== null);
+  const proAnnualConfigured = Boolean(proAnnualPriceId || proAnnualCents !== null);
+  const bizMonthlyConfigured = Boolean(bizMonthlyPriceId || bizMonthlyCents !== null);
+  const bizAnnualConfigured = Boolean(bizAnnualPriceId || bizAnnualCents !== null);
+
+  const anyPriceConfigured =
+    proMonthlyConfigured || proAnnualConfigured || bizMonthlyConfigured || bizAnnualConfigured;
+
+  const modeAllowed = stripeMode === 'test' || (stripeMode === 'live' && liveAuthorized);
 
   return {
     stripeConfigured: secretKeyPresent,
-    stripeMode: getStripeMode(),
+    stripeMode,
+    liveAuthorized,
     webhookConfigured: webhookSecretPresent,
-    checkoutReady: secretKeyPresent,
-    usingConfiguredPriceIds:
-      prices.proMonthly && prices.proAnnual && prices.businessMonthly && prices.businessAnnual,
-    prices,
+    checkoutReady: secretKeyPresent && modeAllowed && anyPriceConfigured,
+    usingConfiguredPriceIds: Boolean(
+      proMonthlyPriceId && proAnnualPriceId && bizMonthlyPriceId && bizAnnualPriceId
+    ),
+    prices: {
+      proMonthly: Boolean(proMonthlyPriceId),
+      proAnnual: Boolean(proAnnualPriceId),
+      businessMonthly: Boolean(bizMonthlyPriceId),
+      businessAnnual: Boolean(bizAnnualPriceId),
+    },
+    catalog: {
+      pro: {
+        monthlyCents: proMonthlyCents,
+        annualCents: proAnnualCents,
+        currency: 'eur',
+        monthlyConfigured: proMonthlyConfigured,
+        annualConfigured: proAnnualConfigured,
+        source: proMonthlyPriceId || proAnnualPriceId ? 'stripe_price' : proMonthlyCents || proAnnualCents ? 'env_cents' : 'unconfigured',
+      },
+      business: {
+        monthlyCents: bizMonthlyCents,
+        annualCents: bizAnnualCents,
+        currency: 'eur',
+        monthlyConfigured: bizMonthlyConfigured,
+        annualConfigured: bizAnnualConfigured,
+        source: bizMonthlyPriceId || bizAnnualPriceId ? 'stripe_price' : bizMonthlyCents || bizAnnualCents ? 'env_cents' : 'unconfigured',
+      },
+    },
+  };
+}
+
+export async function getResolvedStripeConfigStatus(
+  stripeClientOverride?: Stripe
+): Promise<StripeConfigStatusPayload> {
+  const base = getStripeConfigStatus();
+  const stripe = getStripeClient(stripeClientOverride);
+  if (!stripe) return base;
+
+  const [proM, proA, bizM, bizA] = await Promise.all([
+    resolveStripePriceMeta(
+      stripe,
+      getPriceIdForPlan('pro', 'monthly'),
+      getConfiguredAmountCentsForPlan('pro', 'monthly')
+    ),
+    resolveStripePriceMeta(
+      stripe,
+      getPriceIdForPlan('pro', 'annual'),
+      getConfiguredAmountCentsForPlan('pro', 'annual')
+    ),
+    resolveStripePriceMeta(
+      stripe,
+      getPriceIdForPlan('business', 'monthly'),
+      getConfiguredAmountCentsForPlan('business', 'monthly')
+    ),
+    resolveStripePriceMeta(
+      stripe,
+      getPriceIdForPlan('business', 'annual'),
+      getConfiguredAmountCentsForPlan('business', 'annual')
+    ),
+  ]);
+
+  return {
+    ...base,
+    catalog: {
+      pro: {
+        monthlyCents: proM.amountCents,
+        annualCents: proA.amountCents,
+        currency: proM.currency,
+        monthlyConfigured: proM.configured,
+        annualConfigured: proA.configured,
+        source: proM.configured ? proM.source : proA.source,
+      },
+      business: {
+        monthlyCents: bizM.amountCents,
+        annualCents: bizA.amountCents,
+        currency: bizM.currency,
+        monthlyConfigured: bizM.configured,
+        annualConfigured: bizA.configured,
+        source: bizM.configured ? bizM.source : bizA.source,
+      },
+    },
   };
 }
 
@@ -112,23 +322,43 @@ export async function createCheckoutSessionForUser(params: {
   plan: Exclude<PlanTier, 'free'>;
   interval: BillingInterval;
   originUrl: string;
+  stripeClient?: Stripe;
 }): Promise<{ url: string; sessionId: string; mode: 'test' | 'live' }> {
-  const stripe = getStripeClient();
+  const stripe = getStripeClient(params.stripeClient);
   if (!stripe) {
     throw new Error(
-      'STRIPE_NON_CONFIGURE: Stripe n’est pas encore activé côté serveur. Ajoutez STRIPE_SECRET_KEY (clé test sk_test_...) et STRIPE_WEBHOOK_SECRET (whsec_...) dans Settings > Secrets.'
+      'STRIPE_NON_CONFIGURE: Stripe n’est pas encore activé côté serveur. Ajoutez STRIPE_SECRET_KEY (clé test sk_test_...) et STRIPE_WEBHOOK_SECRET (whsec_...) dans vos variables d’environnement.'
+    );
+  }
+
+  const mode = getStripeMode();
+  if (mode === 'live' && !isLiveModeAuthorized()) {
+    throw new Error(
+      'STRIPE_LIVE_NON_AUTORISE: Une clé Stripe live a été détectée mais la mise en production n’est pas encore autorisée (STRIPE_ALLOW_LIVE=true requis après vérification complète en mode Test).'
     );
   }
 
   const configuredPriceId = getPriceIdForPlan(params.plan, params.interval);
-  const amountCents = getAmountCentsForPlan(params.plan, params.interval);
+  const configuredAmountCents = getConfiguredAmountCentsForPlan(params.plan, params.interval);
+
+  if (mode === 'live' && !configuredPriceId) {
+    throw new Error(
+      `STRIPE_PRICE_MANQUANT: En mode production, un identifiant Stripe Price officiel (STRIPE_PRICE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()}) est obligatoire.`
+    );
+  }
+
+  if (!configuredPriceId && configuredAmountCents === null) {
+    throw new Error(
+      `STRIPE_PRICE_MANQUANT: Aucun tarif configuré pour ${params.plan.toUpperCase()} (${params.interval}). Définissez STRIPE_PRICE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()} ou STRIPE_${params.plan.toUpperCase()}_${params.interval.toUpperCase()}_CENTS.`
+    );
+  }
 
   const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = configuredPriceId
     ? { price: configuredPriceId, quantity: 1 }
     : {
         price_data: {
           currency: 'eur',
-          unit_amount: amountCents,
+          unit_amount: configuredAmountCents!,
           recurring: {
             interval: params.interval === 'annual' ? 'year' : 'month',
           },
@@ -136,8 +366,8 @@ export async function createCheckoutSessionForUser(params: {
             name: params.plan === 'pro' ? 'NOVA AI — Abonnement PRO' : 'NOVA AI — Abonnement BUSINESS',
             description:
               params.plan === 'pro'
-                ? 'Assistant IA prioritaire, Mode Business avancé, Business Plans, historique complet et exports.'
-                : "Assistant création d'entreprise, études de marché avancées, stratégies commerciales et priorité maximale.",
+                ? 'Fonctionnalités avancées, jusqu’à 25 sites publiés, pièces jointes 512 Ko et portail client Stripe.'
+                : 'Fonctionnalités professionnelles, sites publiés illimités, pièces jointes 2 Mo et priorité maximale.',
             metadata: {
               plan: params.plan,
               interval: params.interval,
@@ -178,13 +408,14 @@ export async function createCheckoutSessionForUser(params: {
   return {
     url: session.url,
     sessionId: session.id,
-    mode: getStripeMode() === 'live' ? 'live' : 'test',
+    mode: mode === 'live' ? 'live' : 'test',
   };
 }
 
 export async function verifyCheckoutSessionForUser(params: {
   user: PublicUser;
   sessionId: string;
+  stripeClient?: Stripe;
 }): Promise<{
   verified: boolean;
   paymentStatus: string;
@@ -192,7 +423,7 @@ export async function verifyCheckoutSessionForUser(params: {
   interval: BillingInterval;
   user: PublicUser;
 }> {
-  const stripe = getStripeClient();
+  const stripe = getStripeClient(params.stripeClient);
   if (!stripe) {
     throw new Error('STRIPE_NON_CONFIGURE: Clé serveur Stripe manquante.');
   }
@@ -280,7 +511,7 @@ export async function verifyCheckoutSessionForUser(params: {
     amountCents:
       typeof session.amount_total === 'number'
         ? session.amount_total
-        : getAmountCentsForPlan(plan, interval),
+        : getConfiguredAmountCentsForPlan(plan, interval) ?? 0,
     currency: session.currency ?? 'eur',
     status: 'active',
     cancelAtPeriodEnd: Boolean(subRaw?.cancel_at_period_end),
@@ -300,11 +531,12 @@ export async function verifyCheckoutSessionForUser(params: {
 export async function createBillingPortalForUser(params: {
   user: PublicUser;
   originUrl: string;
+  stripeClient?: Stripe;
 }): Promise<{ url: string }> {
-  const stripe = getStripeClient();
+  const stripe = getStripeClient(params.stripeClient);
   if (!stripe) {
     throw new Error(
-      'STRIPE_NON_CONFIGURE: Ajoutez STRIPE_SECRET_KEY dans Settings > Secrets pour gérer la facturation Stripe.'
+      'STRIPE_NON_CONFIGURE: Ajoutez STRIPE_SECRET_KEY dans vos variables d’environnement pour gérer la facturation Stripe.'
     );
   }
   if (!params.user.stripeCustomerId) {
@@ -322,9 +554,10 @@ export async function createBillingPortalForUser(params: {
 }
 
 export async function listStripeInvoicesForUser(
-  user: PublicUser
+  user: PublicUser,
+  stripeClientOverride?: Stripe
 ): Promise<{ invoices: StripeInvoiceSummary[]; stripeConfigured: boolean }> {
-  const stripe = getStripeClient();
+  const stripe = getStripeClient(stripeClientOverride);
   if (!stripe) {
     return { invoices: [], stripeConfigured: false };
   }
@@ -354,8 +587,9 @@ export async function listStripeInvoicesForUser(
 export async function setSubscriptionCancellation(params: {
   userId: string;
   cancelAtPeriodEnd: boolean;
+  stripeClient?: Stripe;
 }): Promise<PublicUser> {
-  const stripe = getStripeClient();
+  const stripe = getStripeClient(params.stripeClient);
   if (!stripe) {
     throw new Error('STRIPE_NON_CONFIGURE: Clé Stripe manquante côté serveur.');
   }
@@ -423,9 +657,20 @@ function inferPlanFromPriceId(priceId: string | undefined): PlanTier | null {
   return null;
 }
 
+function inferPlanFromConfiguredAmount(
+  unitAmount: number,
+  interval: BillingInterval
+): PlanTier | null {
+  if (!unitAmount || unitAmount <= 0) return null;
+  if (unitAmount === getConfiguredAmountCentsForPlan('business', interval)) return 'business';
+  if (unitAmount === getConfiguredAmountCentsForPlan('pro', interval)) return 'pro';
+  return null;
+}
+
 export async function processStripeWebhook(
   rawBody: Buffer,
-  signature: string | undefined
+  signature: string | undefined,
+  stripeClientOverride?: Stripe
 ): Promise<{ received: boolean; eventType: string; duplicate?: boolean }> {
   const webhookSecret = cleanEnv('STRIPE_WEBHOOK_SECRET');
   if (!webhookSecret) {
@@ -436,7 +681,8 @@ export async function processStripeWebhook(
   }
 
   const stripe =
-    getStripeClient() ?? new Stripe(cleanEnv('STRIPE_SECRET_KEY') || 'sk_webhook_verify_only');
+    getStripeClient(stripeClientOverride) ??
+    new Stripe(cleanEnv('STRIPE_SECRET_KEY') || 'sk_webhook_verify_only');
   const event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
 
   if (isStripeEventProcessed(event.id)) {
@@ -476,9 +722,10 @@ export async function processStripeWebhook(
         if (isPaid) {
           let periodStartIso = new Date().toISOString();
           let periodEndIso: string | null = null;
-          if (subscriptionId && getStripeClient()) {
+          const activeClient = getStripeClient(stripeClientOverride);
+          if (subscriptionId && activeClient) {
             try {
-              const subDetails = await getStripeClient()!.subscriptions.retrieve(subscriptionId);
+              const subDetails = await activeClient.subscriptions.retrieve(subscriptionId);
               const subRaw = subDetails as unknown as {
                 current_period_start?: number;
                 current_period_end?: number;
@@ -513,7 +760,7 @@ export async function processStripeWebhook(
             amountCents:
               typeof session.amount_total === 'number'
                 ? session.amount_total
-                : getAmountCentsForPlan(plan, interval),
+                : getConfiguredAmountCentsForPlan(plan, interval) ?? 0,
             currency: session.currency ?? 'eur',
             status: 'active',
             cancelAtPeriodEnd: false,
@@ -529,7 +776,7 @@ export async function processStripeWebhook(
             stripeCheckoutSessionId: session.id,
             plan,
             billingInterval: interval,
-            amountCents: getAmountCentsForPlan(plan, interval),
+            amountCents: getConfiguredAmountCentsForPlan(plan, interval) ?? 0,
             currency: session.currency ?? 'eur',
             status: 'pending_payment',
           });
@@ -593,17 +840,10 @@ export async function processStripeWebhook(
           mappedStatus === 'inactive' ||
           event.type === 'customer.subscription.deleted';
 
-        const inferredByAmount: PlanTier | null =
-          unitAmount === 1999 || unitAmount === 19188
-            ? 'business'
-            : unitAmount === 999 || unitAmount === 9588
-            ? 'pro'
-            : null;
-
         const inferredPlan: PlanTier = isRevoked
           ? 'free'
           : inferPlanFromPriceId(firstPrice) ??
-            inferredByAmount ??
+            inferPlanFromConfiguredAmount(unitAmount, resolvedInterval) ??
             (metaPlan === 'business'
               ? 'business'
               : metaPlan === 'pro'

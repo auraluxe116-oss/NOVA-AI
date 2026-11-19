@@ -1,6 +1,13 @@
-import { AlertCircle, Check, CreditCard, ExternalLink, ShieldCheck } from 'lucide-react';
+import { AlertCircle, Check, CreditCard, ExternalLink, Lock, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { BillingInterval, PageView, PlanTier, PublicUser, StripeStatus } from '../types/nova';
+import type {
+  BillingInterval,
+  PageView,
+  PlanPricingSnapshot,
+  PlanTier,
+  PublicUser,
+  StripeStatus,
+} from '../types/nova';
 import { ApiError, createStripeCheckout, createStripePortal, fetchStripeStatus } from '../utils/api';
 
 interface TarifsPageProps {
@@ -28,9 +35,9 @@ const COMPARISON_ROWS: Array<{
   },
   {
     feature: '18 Modules Business & Contenu',
-    free: 'Inclus',
-    pro: 'Inclus',
-    business: 'Inclus',
+    free: 'Inclus (accès découverte)',
+    pro: 'Inclus (routage prioritaire)',
+    business: 'Inclus (priorité maximale)',
   },
   {
     feature: 'Création entreprise (Logo PNG + Site)',
@@ -63,6 +70,76 @@ const COMPARISON_ROWS: Array<{
     business: 'Portail client Stripe',
   },
 ];
+
+function formatCents(cents: number, currency = 'eur'): string {
+  const value = cents / 100;
+  try {
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: currency.toUpperCase(),
+      minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${value.toFixed(2)} ${currency.toUpperCase()}`;
+  }
+}
+
+function getDisplayPrice(
+  snapshot: PlanPricingSnapshot | undefined,
+  interval: BillingInterval
+): {
+  configured: boolean;
+  headline: string;
+  cadenceLabel: string;
+  annualNote: string | null;
+} {
+  if (!snapshot) {
+    return {
+      configured: false,
+      headline: 'À configurer',
+      cadenceLabel: 'Via Stripe',
+      annualNote: null,
+    };
+  }
+  const cents = interval === 'annual' ? snapshot.annualCents : snapshot.monthlyCents;
+  const isConfigured = interval === 'annual' ? snapshot.annualConfigured : snapshot.monthlyConfigured;
+
+  if (!isConfigured) {
+    return {
+      configured: false,
+      headline: 'À configurer',
+      cadenceLabel: 'Dans Stripe',
+      annualNote: null,
+    };
+  }
+
+  if (cents === null) {
+    return {
+      configured: true,
+      headline: 'Tarif Stripe',
+      cadenceLabel: interval === 'annual' ? '/ an' : '/ mois',
+      annualNote: 'Prix défini sur votre tableau Stripe',
+    };
+  }
+
+  if (interval === 'annual') {
+    const monthlyEquiv = Math.round(cents / 12);
+    return {
+      configured: true,
+      headline: formatCents(monthlyEquiv, snapshot.currency),
+      cadenceLabel: '/ mois',
+      annualNote: `${formatCents(cents, snapshot.currency)}/an`,
+    };
+  }
+
+  return {
+    configured: true,
+    headline: formatCents(cents, snapshot.currency),
+    cadenceLabel: '/ mois',
+    annualNote: null,
+  };
+}
 
 export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
   const [interval, setInterval] = useState<BillingInterval>('monthly');
@@ -124,21 +201,23 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
     }
   };
 
-  const proPrice = interval === 'annual' ? '7,99 €' : '9,99 €';
-  const businessPrice = interval === 'annual' ? '15,99 €' : '19,99 €';
+  const proPrice = getDisplayPrice(stripeStatus?.catalog?.pro, interval);
+  const businessPrice = getDisplayPrice(stripeStatus?.catalog?.business, interval);
+  const liveLocked =
+    stripeStatus?.stripeMode === 'live' && !stripeStatus.liveAuthorized;
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
       <div className="mx-auto max-w-2xl text-center space-y-4">
         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-          Tarifs transparents · NOVA AI PRO
+          Tarifs transparents &amp; Abonnements · NOVA AI PRO
         </p>
         <h1 className="font-display text-3xl font-bold text-[#FAFAFA] sm:text-4xl">
-          Aucun plafond artificiel de messages, quelle que soit la formule.
+          Trois formules claires, sans plafond artificiel de messages.
         </h1>
         <p className="text-sm text-[#A8A8BE] sm:text-base">
-          Passez aux formules Pro ou Business pour héberger davantage de sites publiés, joindre
-          des documents plus volumineux et bénéficier du routage prioritaire Stripe.
+          Démarrez gratuitement puis passez à Pro ou Business via Stripe pour héberger davantage de
+          sites publiés, joindre des documents volumineux et profiter du routage prioritaire.
         </p>
 
         {/* Billing Cadence Switch */}
@@ -163,7 +242,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
                 : 'text-[#A8A8BE] hover:text-white'
             }`}
           >
-            Annuel (-20 %)
+            Annuel
           </button>
         </div>
       </div>
@@ -175,25 +254,42 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
             <p className="font-semibold text-white">Stripe actif en mode Test</p>
             <p className="mt-0.5 text-[#C2B8E6]">
               Les paiements sont connectés à Stripe Checkout en environnement de test. Aucun
-              débit bancaire réel n&apos;est effectué tant que vous utilisez les clés de test.
+              débit bancaire réel n&apos;est effectué tant que les clés de test sont actives.
             </p>
           </div>
         </div>
       )}
 
-      {stripeStatus && !stripeStatus.checkoutReady && (
+      {liveLocked && (
+        <div className="mx-auto mt-8 flex max-w-3xl items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs leading-relaxed text-amber-100">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+          <div>
+            <p className="font-semibold text-white">
+              Paiements réels verrouillés par sécurité (pré-lancement)
+            </p>
+            <p className="mt-0.5">
+              Une clé Stripe live est détectée, mais l&apos;activation commerciale réelle nécessite{' '}
+              <code className="font-mono">STRIPE_ALLOW_LIVE=true</code> après validation complète
+              en mode Test.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {stripeStatus && !stripeStatus.checkoutReady && !liveLocked && (
         <div className="mx-auto mt-8 flex max-w-3xl items-start gap-3 rounded-xl border border-[#32324A] bg-[#111117] p-4 text-xs leading-relaxed text-[#CFCFE2]">
           <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
           <div>
             <p className="font-semibold text-white">
-              Paiements Stripe en attente de configuration serveur
+              Passerelle Stripe en attente de configuration serveur
             </p>
             <p className="mt-1 text-[#A4A4BA]">
-              La passerelle Stripe Checkout et la vérification par webhook s&apos;activent dès
-              que <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> et{' '}
-              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> sont
-              renseignés dans les variables d&apos;environnement du serveur. Aucun paiement
-              fictif n&apos;est jamais simulé.
+              Aucun tarif inventé n&apos;est facturé. Configurez{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_SECRET_KEY</code> (commencez en
+              mode test <code className="font-mono text-[#C4B5FD]">sk_test_...</code>),{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_WEBHOOK_SECRET</code> et vos{' '}
+              <code className="font-mono text-[#C4B5FD]">STRIPE_PRICE_*</code> pour activer les
+              formules Pro et Business.
             </p>
           </div>
         </div>
@@ -226,7 +322,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         <div className="flex flex-col justify-between rounded-xl border border-[#232332] bg-[#111117] p-6">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-[#9E9EB5]">
-              Découverte
+              Accès limité · Découverte
             </p>
             <h2 className="mt-1 font-display text-2xl font-bold text-white">GRATUIT</h2>
             <div className="mt-4 flex items-baseline gap-1.5">
@@ -234,7 +330,8 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               <span className="text-xs text-[#8D8DA4]">/ mois</span>
             </div>
             <p className="mt-2 text-xs text-[#A5A5BB]">
-              Pour échanger librement et créer vos premiers projets avec NOVA AI PRO.
+              Pour découvrir l&apos;assistant et créer vos premiers projets avec des limites
+              définies.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
@@ -262,32 +359,32 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
             onClick={() => onNavigate(user ? 'assistant' : 'inscription')}
             className="mt-8 w-full rounded-lg border border-[#2C2C40] bg-[#171722] py-2.5 text-sm font-semibold text-white hover:border-[#7C3AED] transition-colors"
           >
-            {user && effectivePlan === 'free' ? 'Formule active' : "S'abonner gratuitement"}
+            {user && effectivePlan === 'free' ? 'Formule active' : 'Commencer gratuitement'}
           </button>
         </div>
 
         {/* PRO */}
         <div className="flex flex-col justify-between rounded-xl border border-[#7C3AED] bg-[#141122] p-6">
           <div>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#C4B5FD]">
-                Recommandé
+                Fonctionnalités avancées
               </p>
-              {interval === 'annual' && (
+              {proPrice.annualNote && (
                 <span className="font-mono text-xs tabular-nums text-emerald-400">
-                  95,88 €/an
+                  {proPrice.annualNote}
                 </span>
               )}
             </div>
             <h2 className="mt-1 font-display text-2xl font-bold text-white">PRO</h2>
             <div className="mt-4 flex items-baseline gap-1.5">
               <span className="font-mono text-3xl font-bold tabular-nums text-white">
-                {proPrice}
+                {proPrice.headline}
               </span>
-              <span className="text-xs text-[#B5B5CC]">/ mois</span>
+              <span className="text-xs text-[#B5B5CC]">{proPrice.cadenceLabel}</span>
             </div>
             <p className="mt-2 text-xs text-[#B8B8D0]">
-              Pour entrepreneurs, créateurs et consultants actifs.
+              Pour entrepreneurs, indépendants et créateurs actifs.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#ECECF6]">
@@ -316,9 +413,14 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
 
           <button
             type="button"
-            disabled={loadingPlan === 'pro' || effectivePlan === 'pro'}
+            disabled={
+              loadingPlan === 'pro' ||
+              effectivePlan === 'pro' ||
+              (!hasActivePaidSubscription &&
+                (!stripeStatus?.checkoutReady || !proPrice.configured))
+            }
             onClick={() => void handleSubscribe('pro')}
-            className="mt-8 w-full rounded-lg bg-[#7C3AED] py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-55 transition-colors"
+            className="mt-8 w-full rounded-lg bg-[#7C3AED] py-2.5 text-sm font-semibold text-white hover:bg-[#6D28D9] disabled:opacity-50 transition-colors"
           >
             {effectivePlan === 'pro'
               ? 'Formule active'
@@ -326,29 +428,31 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               ? 'Redirection Stripe...'
               : hasActivePaidSubscription
               ? 'Changer via Portail Stripe'
-              : "S'abonner"}
+              : !stripeStatus?.checkoutReady || !proPrice.configured
+              ? 'Configuration Stripe requise'
+              : "S'abonner à PRO"}
           </button>
         </div>
 
         {/* BUSINESS */}
         <div className="flex flex-col justify-between rounded-xl border border-[#232332] bg-[#111117] p-6">
           <div>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#9E9EB5]">
-                Direction &amp; Croissance
+                Fonctionnalités professionnelles
               </p>
-              {interval === 'annual' && (
+              {businessPrice.annualNote && (
                 <span className="font-mono text-xs tabular-nums text-emerald-400">
-                  191,88 €/an
+                  {businessPrice.annualNote}
                 </span>
               )}
             </div>
             <h2 className="mt-1 font-display text-2xl font-bold text-white">BUSINESS</h2>
             <div className="mt-4 flex items-baseline gap-1.5">
               <span className="font-mono text-3xl font-bold tabular-nums text-white">
-                {businessPrice}
+                {businessPrice.headline}
               </span>
-              <span className="text-xs text-[#8D8DA4]">/ mois</span>
+              <span className="text-xs text-[#8D8DA4]">{businessPrice.cadenceLabel}</span>
             </div>
             <p className="mt-2 text-xs text-[#A5A5BB]">
               Pour studios, agences et entreprises multi-projets.
@@ -380,9 +484,14 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
 
           <button
             type="button"
-            disabled={loadingPlan === 'business' || effectivePlan === 'business'}
+            disabled={
+              loadingPlan === 'business' ||
+              effectivePlan === 'business' ||
+              (!hasActivePaidSubscription &&
+                (!stripeStatus?.checkoutReady || !businessPrice.configured))
+            }
             onClick={() => void handleSubscribe('business')}
-            className="mt-8 w-full rounded-lg bg-[#FAFAFA] py-2.5 text-sm font-semibold text-[#08080B] hover:bg-[#E4E4EE] disabled:opacity-55 transition-colors"
+            className="mt-8 w-full rounded-lg bg-[#FAFAFA] py-2.5 text-sm font-semibold text-[#08080B] hover:bg-[#E4E4EE] disabled:opacity-50 transition-colors"
           >
             {effectivePlan === 'business'
               ? 'Formule active'
@@ -390,7 +499,9 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
               ? 'Redirection Stripe...'
               : hasActivePaidSubscription
               ? 'Passer à BUSINESS (Portail Stripe)'
-              : "S'abonner"}
+              : !stripeStatus?.checkoutReady || !businessPrice.configured
+              ? 'Configuration Stripe requise'
+              : "S'abonner à BUSINESS"}
           </button>
         </div>
       </div>
@@ -399,7 +510,7 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
       <section className="mt-14 rounded-xl border border-[#232332] bg-[#111117] overflow-hidden">
         <div className="border-b border-[#1F1F2D] px-6 py-4">
           <h2 className="font-display text-lg font-semibold text-white">
-            Comparatif détaillé des capacités
+            Comparatif détaillé des capacités et limites
           </h2>
         </div>
         <div className="overflow-x-auto">
@@ -435,7 +546,8 @@ export function TarifsPage({ user, onNavigate }: TarifsPageProps) {
         <div className="flex items-center justify-center gap-2">
           <ShieldCheck className="h-4 w-4 text-[#8B5CF6]" />
           <span>
-            Résiliation possible à tout moment depuis votre Profil ou le portail client Stripe.
+            Aucun abonnement n&apos;est activé sans confirmation serveur et webhook Stripe.
+            Résiliation possible à tout moment depuis votre Profil.
           </span>
         </div>
       </div>

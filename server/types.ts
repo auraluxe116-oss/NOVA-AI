@@ -88,7 +88,7 @@ export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
   },
   business: {
     id: 'business',
-    name: 'PREMIUM',
+    name: 'BUSINESS',
     tagline: 'Pour fondateurs, dirigeants et équipes en croissance',
     monthlyPriceEur: 19.99,
     annualMonthlyEquivalentEur: 15.99,
@@ -119,6 +119,7 @@ export interface UserRecord {
   current_period_end: string | null;
   recovery_code_hash?: string | null;
   preferences_json?: string | null;
+  token_version?: number;
   created_at: string;
   updated_at: string;
 }

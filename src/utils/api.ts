@@ -148,6 +148,10 @@ export async function deleteAccountApi(password: string): Promise<void> {
   });
 }
 
+export async function exportUserDataApi(): Promise<Record<string, unknown>> {
+  return requestJson('/api/auth/export');
+}
+
 export async function fetchDashboard(): Promise<DashboardData> {
   return requestJson('/api/dashboard');
 }

@@ -66,12 +66,14 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 interface SessionPayload {
   uid: string;
   exp: number;
+  tv?: number;
 }
 
-export function createSessionToken(userId: string): string {
+export function createSessionToken(userId: string, tokenVersion = 1): string {
   const payload: SessionPayload = {
     uid: userId,
     exp: Date.now() + SESSION_TTL_MS,
+    tv: tokenVersion,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const signature = crypto
@@ -130,8 +132,13 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
   return result;
 }
 
-export function setSessionCookie(req: express.Request, res: express.Response, userId: string): void {
-  const token = createSessionToken(userId);
+export function setSessionCookie(
+  req: express.Request,
+  res: express.Response,
+  userId: string,
+  tokenVersion = 1
+): void {
+  const token = createSessionToken(userId, tokenVersion);
   const isHttps =
     req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.VERCEL === '1';
 
@@ -187,7 +194,12 @@ export function getAuthenticatedUserRecord(req: express.Request): UserRecord | n
   if (!token) return null;
   const payload = verifySessionToken(token);
   if (!payload) return null;
-  return findUserById(payload.uid);
+  const record = findUserById(payload.uid);
+  if (!record) return null;
+  if ((record.token_version ?? 1) !== (payload.tv ?? 1)) {
+    return null;
+  }
+  return record;
 }
 
 export function getAuthenticatedPublicUser(req: express.Request): PublicUser | null {

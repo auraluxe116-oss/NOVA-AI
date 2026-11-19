@@ -289,41 +289,62 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
           </button>
         </form>
 
-        <div className="mt-6 border-t border-[#1F1F2D] pt-4 text-center text-xs text-[#9E9EB5]">
-          {resetMode ? (
+        <div className="mt-6 border-t border-[#1F1F2D] pt-4 text-center text-xs text-[#9E9EB5] space-y-2.5">
+          <div>
+            {resetMode ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setResetMode(false);
+                  setError(null);
+                }}
+                className="font-semibold text-[#C4B5FD] hover:text-white"
+              >
+                Retour à la connexion
+              </button>
+            ) : isRegister ? (
+              <>
+                Déjà inscrit ?{' '}
+                <button
+                  type="button"
+                  onClick={() => onNavigate('connexion')}
+                  className="font-semibold text-[#C4B5FD] hover:text-white"
+                >
+                  Se connecter
+                </button>
+              </>
+            ) : (
+              <>
+                Pas encore de compte ?{' '}
+                <button
+                  type="button"
+                  onClick={() => onNavigate('inscription')}
+                  className="font-semibold text-[#C4B5FD] hover:text-white"
+                >
+                  Créer un compte gratuit
+                </button>
+              </>
+            )}
+          </div>
+          <p className="text-[11px] text-[#7D7D96]">
+            En utilisant NOVA AI PRO, vous acceptez nos{' '}
             <button
               type="button"
-              onClick={() => {
-                setResetMode(false);
-                setError(null);
-              }}
-              className="font-semibold text-[#C4B5FD] hover:text-white"
+              onClick={() => onNavigate('confidentialite')}
+              className="text-[#9E9EB5] underline hover:text-white"
             >
-              Retour à la connexion
+              règles de confidentialité (RGPD)
+            </button>{' '}
+            et{' '}
+            <button
+              type="button"
+              onClick={() => onNavigate('mentions-legales')}
+              className="text-[#9E9EB5] underline hover:text-white"
+            >
+              mentions légales
             </button>
-          ) : isRegister ? (
-            <>
-              Déjà inscrit ?{' '}
-              <button
-                type="button"
-                onClick={() => onNavigate('connexion')}
-                className="font-semibold text-[#C4B5FD] hover:text-white"
-              >
-                Se connecter
-              </button>
-            </>
-          ) : (
-            <>
-              Pas encore de compte ?{' '}
-              <button
-                type="button"
-                onClick={() => onNavigate('inscription')}
-                className="font-semibold text-[#C4B5FD] hover:text-white"
-              >
-                Créer un compte gratuit
-              </button>
-            </>
-          )}
+            .
+          </p>
         </div>
       </div>
     </main>

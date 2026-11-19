@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import 'dotenv/config';
 import express from 'express';
+import type Stripe from 'stripe';
 import {
   checkRateLimit,
   clearSessionCookie,
@@ -27,6 +28,7 @@ import {
   deletePublishedSite,
   deleteUserAccount,
   deleteUserDocument,
+  exportUserData,
   findUserByEmail,
   getConversationForUser,
   getDailyUsageCount,
@@ -69,6 +71,7 @@ import {
 import {
   createBillingPortalForUser,
   createCheckoutSessionForUser,
+  getResolvedStripeConfigStatus,
   getStripeConfigStatus,
   listStripeInvoicesForUser,
   processStripeWebhook,
@@ -142,6 +145,7 @@ export interface CreateAppOptions {
   summarizeHistory?: typeof summarizeConversationHistory;
   providerKeyChecker?: typeof getProviderApiKey;
   generateCompanySuite?: typeof generateCompanyCreationSuite;
+  stripeClient?: Stripe;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Express {
@@ -171,7 +175,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           res.status(400).json({ error: 'Corps brut Webhook Stripe requis.' });
           return;
         }
-        const result = await processStripeWebhook(req.body, signature);
+        const result = await processStripeWebhook(req.body, signature, options.stripeClient);
         res.json(result);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Erreur Webhook Stripe.';
@@ -230,8 +234,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const ipHash = hashIp(ip);
     const limit = checkRateLimit(`auth:register:${ipHash}`, 12, 15 * 60_000);
     if (!limit.allowed) {
+      res.setHeader('Retry-After', String(limit.retryAfterSec));
       res.status(429).json({
         code: 'RATE_LIMITED',
+        retryAfterSec: limit.retryAfterSec,
         error: `Trop de tentatives d'inscription. Réessaie dans ${limit.retryAfterSec} secondes.`,
       });
       return;
@@ -240,7 +246,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     const password = String(req.body?.password ?? '');
     const displayName = String(req.body?.displayName ?? '').trim();
-    const companyName = String(req.body?.companyName ?? '').trim();
+    const companyName = String(req.body?.companyName ?? '').trim().slice(0, 100);
 
     if (!isValidEmail(email)) {
       res.status(400).json({ code: 'INVALID_EMAIL', error: 'Adresse e-mail invalide.' });
@@ -279,7 +285,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       recoveryCodeHash: hashPassword(rawRecoveryCode),
     });
     const publicUser = toPublicUser(userRecord);
-    setSessionCookie(req, res, publicUser.id);
+    setSessionCookie(req, res, publicUser.id, userRecord.token_version ?? 1);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.status(201).json({
       user: publicUser,
       quota: buildQuotaSnapshot(publicUser, ipHash),
@@ -292,8 +299,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const ipHash = hashIp(ip);
     const limit = checkRateLimit(`auth:login:${ipHash}`, 20, 15 * 60_000);
     if (!limit.allowed) {
+      res.setHeader('Retry-After', String(limit.retryAfterSec));
       res.status(429).json({
         code: 'RATE_LIMITED',
+        retryAfterSec: limit.retryAfterSec,
         error: `Trop de tentatives de connexion. Réessaie dans ${limit.retryAfterSec} secondes.`,
       });
       return;
@@ -319,7 +328,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }
 
     const publicUser = toPublicUser(userRecord);
-    setSessionCookie(req, res, publicUser.id);
+    setSessionCookie(req, res, publicUser.id, userRecord.token_version ?? 1);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
       user: publicUser,
       quota: buildQuotaSnapshot(publicUser, ipHash),
@@ -331,8 +341,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const ipHash = hashIp(ip);
     const limit = checkRateLimit(`auth:reset:${ipHash}`, 10, 15 * 60_000);
     if (!limit.allowed) {
+      res.setHeader('Retry-After', String(limit.retryAfterSec));
       res.status(429).json({
         code: 'RATE_LIMITED',
+        retryAfterSec: limit.retryAfterSec,
         error: `Trop de tentatives. Réessaie dans ${limit.retryAfterSec} secondes.`,
       });
       return;
@@ -491,11 +503,34 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
     const ipHash = hashIp(getClientIp(req));
     const publicUser = toPublicUser(updated);
+    if (nextPasswordHash) {
+      setSessionCookie(req, res, publicUser.id, updated.token_version ?? 1);
+    }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
       user: publicUser,
       quota: buildQuotaSnapshot(publicUser, ipHash),
       recoveryCode: generatedRecoveryCode ?? null,
     });
+  });
+
+  app.get('/api/auth/export', (req, res) => {
+    const userRecord = getAuthenticatedUserRecord(req);
+    if (!userRecord) {
+      res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
+      return;
+    }
+    const payload = exportUserData(userRecord.id);
+    if (!payload) {
+      res.status(404).json({ code: 'USER_NOT_FOUND', error: 'Compte introuvable.' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="nova-ai-pro-mes-donnees.json"'
+    );
+    res.json(payload);
   });
 
   app.delete('/api/auth/account', (req, res) => {
@@ -1606,8 +1641,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   // 8. Stripe Billing Routes
-  app.get('/api/stripe/status', (_req, res) => {
-    res.json(getStripeConfigStatus());
+  app.get('/api/stripe/status', async (_req, res) => {
+    const status = await getResolvedStripeConfigStatus(options.stripeClient);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json(status);
   });
 
   app.post('/api/stripe/create-checkout-session', async (req, res) => {
@@ -1639,15 +1676,24 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         plan,
         interval,
         originUrl,
+        stripeClient: options.stripeClient,
       });
       res.json(session);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erreur Stripe Checkout.';
       const isConfigErr =
         message.startsWith('STRIPE_NON_CONFIGURE') ||
-        message.startsWith('STRIPE_PRICE_MANQUANT');
+        message.startsWith('STRIPE_PRICE_MANQUANT') ||
+        message.startsWith('STRIPE_LIVE_NON_AUTORISE');
+      const code = message.startsWith('STRIPE_LIVE_NON_AUTORISE')
+        ? 'STRIPE_LIVE_LOCKED'
+        : message.startsWith('STRIPE_PRICE_MANQUANT')
+        ? 'STRIPE_PRICE_NOT_CONFIGURED'
+        : isConfigErr
+        ? 'STRIPE_NOT_CONFIGURED'
+        : 'STRIPE_CHECKOUT_ERROR';
       res.status(isConfigErr ? 503 : 400).json({
-        code: isConfigErr ? 'STRIPE_NOT_CONFIGURED' : 'STRIPE_CHECKOUT_ERROR',
+        code,
         error: message,
       });
     }
@@ -1662,7 +1708,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     try {
       const reqOrigin = req.headers.origin as string | undefined;
       const originUrl = resolveAppBaseUrl(reqOrigin);
-      const portal = await createBillingPortalForUser({ user, originUrl });
+      const portal = await createBillingPortalForUser({
+        user,
+        originUrl,
+        stripeClient: options.stripeClient,
+      });
       res.json(portal);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erreur portail Stripe.';
@@ -1683,7 +1733,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }
     try {
       const ipHash = hashIp(getClientIp(req));
-      const result = await verifyCheckoutSessionForUser({ user, sessionId });
+      const result = await verifyCheckoutSessionForUser({
+        user,
+        sessionId,
+        stripeClient: options.stripeClient,
+      });
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.json({
         ...result,
         quota: buildQuotaSnapshot(result.user, ipHash),
@@ -1705,6 +1760,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const updatedUser = await setSubscriptionCancellation({
         userId: user.id,
         cancelAtPeriodEnd: true,
+        stripeClient: options.stripeClient,
       });
       res.json({
         user: updatedUser,
@@ -1728,6 +1784,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const updatedUser = await setSubscriptionCancellation({
         userId: user.id,
         cancelAtPeriodEnd: false,
+        stripeClient: options.stripeClient,
       });
       res.json({
         user: updatedUser,
@@ -1746,6 +1803,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
       return;
     }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({ subscriptions: listUserSubscriptions(user.id) });
   });
 
@@ -1756,7 +1814,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       return;
     }
     try {
-      const result = await listStripeInvoicesForUser(user);
+      const result = await listStripeInvoicesForUser(user, options.stripeClient);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Impossible de charger les factures Stripe.';

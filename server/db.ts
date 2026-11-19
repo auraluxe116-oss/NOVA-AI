@@ -87,6 +87,7 @@ db.exec(`
     current_period_end TEXT,
     recovery_code_hash TEXT,
     preferences_json TEXT NOT NULL DEFAULT '{}',
+    token_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -237,6 +238,7 @@ const safeMigrations = [
   `ALTER TABLE users ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE users ADD COLUMN recovery_code_hash TEXT`,
   `ALTER TABLE users ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1`,
   `ALTER TABLE conversations ADD COLUMN context_summary TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE conversations ADD COLUMN summarized_message_count INTEGER NOT NULL DEFAULT 0`,
 ];
@@ -379,6 +381,7 @@ export function updateUserProfile(
     companyName?: string;
     passwordHash?: string;
     recoveryCodeHash?: string;
+    bumpTokenVersion?: boolean;
     preferences?: Partial<UserPreferences>;
   }
 ): UserRecord | null {
@@ -386,14 +389,20 @@ export function updateUserProfile(
   if (!current) return null;
   const now = new Date().toISOString();
   const displayName =
-    updates.displayName !== undefined ? updates.displayName.trim() : current.display_name;
+    updates.displayName !== undefined
+      ? updates.displayName.trim().slice(0, 80)
+      : current.display_name;
   const companyName =
-    updates.companyName !== undefined ? updates.companyName.trim() : current.company_name;
+    updates.companyName !== undefined
+      ? updates.companyName.trim().slice(0, 100)
+      : current.company_name;
   const passwordHash = updates.passwordHash ?? current.password_hash;
   const recoveryCodeHash =
     updates.recoveryCodeHash !== undefined
       ? updates.recoveryCodeHash
       : current.recovery_code_hash ?? null;
+  const shouldBumpToken = Boolean(updates.bumpTokenVersion || updates.passwordHash);
+  const nextTokenVersion = (current.token_version ?? 1) + (shouldBumpToken ? 1 : 0);
   const mergedPrefs: UserPreferences = {
     ...parsePreferences(current.preferences_json),
     ...(updates.preferences ?? {}),
@@ -406,6 +415,7 @@ export function updateUserProfile(
       password_hash = ?,
       recovery_code_hash = ?,
       preferences_json = ?,
+      token_version = ?,
       updated_at = ?
      WHERE id = ?`
   ).run(
@@ -414,6 +424,7 @@ export function updateUserProfile(
     passwordHash,
     recoveryCodeHash,
     JSON.stringify(mergedPrefs),
+    nextTokenVersion,
     now,
     userId
   );
@@ -422,8 +433,28 @@ export function updateUserProfile(
 }
 
 export function deleteUserAccount(userId: string): boolean {
+  db.prepare('DELETE FROM usage_logs WHERE user_id = ?').run(userId);
   const result = db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   return Number(result.changes) > 0;
+}
+
+export function exportUserData(userId: string): Record<string, unknown> | null {
+  const userRow = findUserById(userId);
+  if (!userRow) return null;
+  const conversations = listUserConversations(userId).map((conv) => ({
+    ...conv,
+    messages: listConversationMessages(conv.id, 1000),
+  }));
+  return {
+    exportedAt: new Date().toISOString(),
+    account: toPublicUser(userRow),
+    conversations,
+    businessProjects: listBusinessProjects(userId),
+    companyCreations: listCompanyCreations(userId),
+    publishedSites: listUserPublishedSites(userId),
+    documents: listUserDocuments(userId),
+    subscriptions: listUserSubscriptions(userId),
+  };
 }
 
 export function updateUserSubscription(

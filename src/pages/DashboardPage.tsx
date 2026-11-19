@@ -7,6 +7,8 @@ import {
   FileText,
   History,
   MessageSquare,
+  Settings,
+  UserCheck,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { DashboardData, PageView, PublicUser } from '../types/nova';
@@ -89,7 +91,7 @@ export function DashboardPage({
             className="inline-flex items-center gap-2 rounded-lg bg-[#7C3AED] px-4 py-2 text-sm font-semibold text-white hover:bg-[#6D28D9] whitespace-nowrap shrink-0"
           >
             <MessageSquare className="h-4 w-4" />
-            Nouveau chat
+            Assistant IA
           </button>
           <button
             type="button"
@@ -98,6 +100,14 @@ export function DashboardPage({
           >
             <Briefcase className="h-4 w-4 text-[#3B82F6]" />
             Studio Business
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('profil')}
+            className="inline-flex items-center gap-2 rounded-lg border border-[#2B2B3D] bg-[#111117] px-4 py-2 text-sm font-medium text-[#E0E0EE] hover:border-[#7C3AED] whitespace-nowrap shrink-0"
+          >
+            <Settings className="h-4 w-4 text-[#A78BFA]" />
+            Profil &amp; Paramètres
           </button>
         </div>
       </div>
@@ -144,18 +154,43 @@ export function DashboardPage({
         <>
           {/* Real Metrics Strip */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
-              <p className="text-xs text-[#9E9EB5]">Formule active</p>
-              <p className="mt-2 font-display text-2xl font-bold text-white uppercase">
-                {data.user.effectivePlan}
-              </p>
-              <p className="mt-1 text-xs text-[#93C5FD]">
-                {data.user.subscriptionStatus === 'active'
-                  ? data.user.cancelAtPeriodEnd
-                    ? 'Actif (résiliation programmée)'
-                    : 'Actif (Stripe)'
-                  : 'Offre Gratuite'}
-              </p>
+            <div className="rounded-xl border border-[#232332] bg-[#111117] p-5 flex flex-col justify-between">
+              <div>
+                <p className="text-xs text-[#9E9EB5]">Abonnement &amp; Statut</p>
+                <p className="mt-2 font-display text-2xl font-bold text-white uppercase">
+                  {data.user.effectivePlan === 'free'
+                    ? 'GRATUIT'
+                    : data.user.effectivePlan.toUpperCase()}
+                </p>
+                <p className="mt-1 text-xs text-[#93C5FD]">
+                  {data.user.subscriptionStatus === 'active'
+                    ? data.user.cancelAtPeriodEnd
+                      ? 'Actif (résiliation programmée)'
+                      : 'Actif (vérifié Stripe)'
+                    : data.user.subscriptionStatus === 'past_due'
+                    ? 'Paiement en retard'
+                    : data.user.subscriptionStatus === 'canceled'
+                    ? 'Résilié · Accès Gratuit'
+                    : 'Offre Gratuite'}
+                </p>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-3 text-xs">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('profil')}
+                  className="inline-flex items-center gap-1 font-medium text-[#C4B5FD] hover:text-white"
+                >
+                  Gérer
+                  <ArrowRight className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('tarifs')}
+                  className="text-[#9E9EB5] hover:text-white"
+                >
+                  Formules
+                </button>
+              </div>
             </div>
 
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
@@ -192,13 +227,44 @@ export function DashboardPage({
             </div>
 
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
-              <p className="text-xs text-[#9E9EB5]">Documents &amp; Analyses</p>
+              <p className="text-xs text-[#9E9EB5]">Capacités de la formule</p>
               <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
-                {data.stats.totalDocuments + data.stats.totalBusinessProjects}
+                {data.quota.maxPublishedSites === null
+                  ? 'Illimité'
+                  : `${data.stats.totalPublishedSites}/${data.quota.maxPublishedSites}`}{' '}
+                <span className="text-xs font-normal text-[#8D8DA4]">sites</span>
               </p>
               <p className="mt-1 text-xs text-[#8D8DA4]">
-                {data.stats.totalDocuments} docs PDF · {data.stats.totalBusinessProjects} analyses
+                Pièces jointes max : {Math.round(data.quota.maxAttachmentBytes / 1024)} Ko ·{' '}
+                {data.stats.totalDocuments} docs PDF
               </p>
+            </div>
+          </div>
+
+          {/* Account Summary Strip */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#232332] bg-[#0D0D13] px-5 py-3.5 text-xs">
+            <div className="flex flex-wrap items-center gap-3 text-[#C8C8DC]">
+              <UserCheck className="h-4 w-4 text-[#3B82F6]" />
+              <span>
+                Compte : <strong className="text-white">{data.user.email}</strong>
+                {data.user.companyName ? ` · ${data.user.companyName}` : ''}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                onClick={() => onNavigate('historique')}
+                className="font-medium text-[#C4B5FD] hover:text-white"
+              >
+                Historique ({data.stats.totalConversations})
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('profil')}
+                className="font-medium text-[#93C5FD] hover:text-white"
+              >
+                Paramètres &amp; Confidentialité
+              </button>
             </div>
           </div>
 
