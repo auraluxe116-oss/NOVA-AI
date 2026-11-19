@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "tsx --test server/conversation.test.ts server/gemini-errors.test.ts"
+    "test": "tsx --test server/conversation.test.ts server/gemini-errors.test.ts server/business-platform.test.ts"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",

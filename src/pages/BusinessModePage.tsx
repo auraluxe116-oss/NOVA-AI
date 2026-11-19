@@ -97,7 +97,7 @@ const BUSINESS_MODULES: BusinessModuleItem[] = [
   { key: 'business_ideas', label: '1. Idées de business', summary: 'Concepts rentables selon vos compétences et budget.' },
   { key: 'zero_budget', label: '2. Business avec 0 €', summary: 'Lancement sans capital via outils gratuits et prospection.' },
   { key: 'business_plan', label: '3. Business plan', summary: 'Structure stratégique, financière et opérationnelle.' },
-  { key: 'market_research', label: '4. Étude de marché', summary: 'Demande, segments cibles et validation terrain.' },
+  { key: 'market_study', label: '4. Étude de marché', summary: 'Demande, segments cibles et validation terrain.' },
   { key: 'competitor_analysis', label: '5. Analyse concurrentielle', summary: 'Cartographie des concurrents et positionnement.' },
   { key: 'company_creation', label: "6. Création d'entreprise", summary: 'Statut, démarches, lancement et feuille de route.' },
   { key: 'find_clients', label: '7. Recherche de clients', summary: 'Canaux d’acquisition directs et scripts de prospection.' },
@@ -106,12 +106,12 @@ const BUSINESS_MODULES: BusinessModuleItem[] = [
   { key: 'ecommerce_store', label: '10. E-commerce', summary: 'Catalogue, logistique, fiches produits et tunnel.' },
   { key: 'sales_strategy', label: '11. Stratégie commerciale', summary: 'Structuration d’offre, objections et closing.' },
   { key: 'costs_margins', label: '12. Calcul coûts & marges', summary: 'Rentabilité unitaire, charges et seuil d’équilibre.' },
-  { key: 'quote_builder', label: '13. Devis', summary: 'Structure de devis claire, conditions et livrables.' },
+  { key: 'quote_creation', label: '13. Devis', summary: 'Structure de devis claire, conditions et livrables.' },
   { key: 'invoice_billing', label: '14. Factures', summary: 'Modèles conformes et séquences de relance.' },
-  { key: 'professional_emails', label: '15. Emails professionnels', summary: 'Séquences B2B, relances et propositions par email.' },
+  { key: 'professional_texts', label: '15. Emails professionnels', summary: 'Séquences B2B, relances et propositions par email.' },
   { key: 'action_plan', label: "16. Plans d'action", summary: 'Feuille de route concrète semaine par semaine.' },
-  { key: 'automation_workflow', label: '17. Automatisation', summary: 'Workflows no-code, CRM et gains de productivité.' },
-  { key: 'business_growth', label: "18. Croissance d'entreprise", summary: 'Rétention, panier moyen et partenariats.' },
+  { key: 'automation_ops', label: '17. Automatisation', summary: 'Workflows no-code, CRM et gains de productivité.' },
+  { key: 'low_budget_growth', label: "18. Croissance d'entreprise", summary: 'Rétention, panier moyen et partenariats.' },
 ];
 
 const CONTENT_FORMATS = [
@@ -122,7 +122,7 @@ const CONTENT_FORMATS = [
   { key: 'linkedin_post', label: 'Publications LinkedIn' },
   { key: 'ad_copy', label: 'Publicités (Meta / Google Ads)' },
   { key: 'slogans', label: 'Slogans & Accroches' },
-  { key: 'sales_email', label: 'Emails marketing & vente' },
+  { key: 'marketing_email', label: 'Emails marketing & vente' },
   { key: 'product_description', label: 'Descriptions de produits' },
   { key: 'editorial_calendar', label: 'Calendrier éditorial (14 jours)' },
 ];
@@ -264,6 +264,14 @@ export function BusinessModePage({
   const [docSaveFeedback, setDocSaveFeedback] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  const moduleInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (user?.preferences?.defaultExperience) {
+      setCompExp(user.preferences.defaultExperience);
+      setExperienceLevel(user.preferences.defaultExperience);
+    }
+  }, [user?.preferences?.defaultExperience]);
 
   // Convert SVG -> Real PNG image whenever logoSvg or backdrop changes
   useEffect(() => {
@@ -502,7 +510,8 @@ export function BusinessModePage({
 
   // --- HANDLERS: 18 MODULES STREAM ---
   const runModuleGeneration = async () => {
-    if (isGenerating) return;
+    if (isGenerating || moduleInFlightRef.current) return;
+    moduleInFlightRef.current = true;
     setErrorMessage(null);
     setStreamingContent('');
     setSources([]);
@@ -547,6 +556,7 @@ export function BusinessModePage({
         );
       }
     } finally {
+      moduleInFlightRef.current = false;
       setIsGenerating(false);
       setStatusLabel(null);
       abortRef.current = null;

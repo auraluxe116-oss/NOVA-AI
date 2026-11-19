@@ -24,6 +24,7 @@ import type {
   AIProviderInfo,
   ChatMessage,
   ConversationSummary,
+  ExperienceLevel,
   PageView,
   PublicUser,
   QuotaSnapshot,
@@ -56,24 +57,24 @@ interface AttachmentPayload {
 
 const STARTER_TOPICS = [
   {
-    category: 'Entrepreneuriat',
+    category: 'Agence IA & SaaS',
     prompt:
-      'Quelles étapes concrètes pour valider une idée de service B2B avant de développer un produit complet ?',
+      "Je veux lancer une agence d'automatisation IA B2B avec 500 € de budget : donne-moi le plan complet en 7 étapes pour signer mes 3 premiers clients.",
   },
   {
-    category: 'Finance & Statut',
+    category: 'E-commerce & Marges',
     prompt:
-      'Compare clairement micro-entreprise, EURL et SASU pour démarrer une activité de conseil en France.',
+      'Calcule un modèle réaliste de boutique e-commerce (coûts produit, acquisition, retours, TVA, marge nette) avant de lancer la publicité.',
   },
   {
-    category: 'Vente & Commercial',
+    category: 'Vente & Prospection',
     prompt:
-      'Rédige une proposition commerciale claire et structurée pour vendre une prestation de refonte web à une PME.',
+      'Rédige une séquence de prospection B2B honnête et une proposition commerciale structurée pour vendre un service à des PME.',
   },
   {
-    category: 'Programmation',
+    category: 'Statut & Finance FR',
     prompt:
-      'Explique comment sécuriser une API Express avec cookies HTTP-only, hachage scrypt et limitation de débit.',
+      'Compare micro-entreprise, EURL et SASU en France (charges sociales, TVA franchise 293 B, obligations légales) pour démarrer une activité de conseil.',
   },
 ];
 
@@ -91,6 +92,9 @@ export function AssistantPage({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [useWebSearch, setUseWebSearch] = useState(Boolean(user?.preferences?.autoWebSearch));
+  const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel>(
+    user?.preferences?.defaultExperience || 'debutant'
+  );
   const [providers, setProviders] = useState<AIProviderInfo[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<AIProviderId>(
     user?.preferences?.preferredProvider || 'gemini'
@@ -186,7 +190,10 @@ export function AssistantPage({
 
   useEffect(() => {
     void loadConversationsList();
-  }, [user?.id]);
+    if (user?.preferences?.defaultExperience) {
+      setExperienceLevel(user.preferences.defaultExperience);
+    }
+  }, [user?.id, user?.preferences?.defaultExperience]);
 
   useEffect(() => {
     if (initialConversationId && user) {
@@ -390,6 +397,7 @@ export function AssistantPage({
         message: cleanPrompt,
         conversationId: targetConvId,
         useWebSearch,
+        experienceLevel,
         isRetry,
         provider: selectedProvider,
         model: selectedModel,
@@ -695,7 +703,7 @@ export function AssistantPage({
   );
 
   return (
-    <div className="relative mx-auto flex h-[calc(100vh-4rem)] max-w-7xl border-x border-[#1C1C28] bg-[#08080B]">
+    <div className="relative mx-auto flex h-[calc(100dvh-4rem)] max-w-7xl border-x border-[#1C1C28] bg-[#08080B]">
       {/* Desktop Sidebar Conversations */}
       <aside className="hidden w-72 shrink-0 flex-col border-r border-[#1F1F2D] bg-[#0B0B10] md:flex">
         {renderSidebarBody()}
@@ -763,10 +771,26 @@ export function AssistantPage({
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <select
+              aria-label="Niveau d'accompagnement business"
+              value={experienceLevel}
+              onChange={(e) => setExperienceLevel(e.target.value as ExperienceLevel)}
+              className="rounded-lg border border-[#232332] bg-[#111117] px-2 py-1.5 text-xs text-[#E4E4EE] focus:outline-none whitespace-nowrap shrink-0"
+            >
+              <option value="debutant" className="bg-[#111117] text-white">
+                Niveau : Débutant
+              </option>
+              <option value="intermediaire" className="bg-[#111117] text-white">
+                Niveau : Intermédiaire
+              </option>
+              <option value="confirme" className="bg-[#111117] text-white">
+                Niveau : Confirmé
+              </option>
+            </select>
             {providers.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-[#232332] bg-[#111117] px-2 py-1 text-xs">
-                <Cpu className="h-3.5 w-3.5 text-[#3B82F6]" />
+              <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-[#232332] bg-[#111117] px-2 py-1 text-xs">
+                <Cpu className="h-3.5 w-3.5 shrink-0 text-[#3B82F6]" />
                 <select
                   aria-label="Fournisseur et modèle IA"
                   value={`${selectedProvider}:${selectedModel}`}
@@ -777,7 +801,7 @@ export function AssistantPage({
                       setSelectedModel(mod);
                     }
                   }}
-                  className="bg-transparent text-xs text-[#E4E4EE] focus:outline-none"
+                  className="max-w-[145px] sm:max-w-[230px] truncate bg-transparent text-xs text-[#E4E4EE] focus:outline-none"
                 >
                   {providers.map((p) =>
                     p.models.map((m) => (

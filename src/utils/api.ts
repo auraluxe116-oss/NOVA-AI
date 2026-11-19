@@ -604,6 +604,7 @@ export async function streamChatMessage(params: {
   message: string;
   conversationId?: string | null;
   useWebSearch?: boolean;
+  experienceLevel?: ExperienceLevel;
   isRetry?: boolean;
   provider?: AIProviderId;
   model?: string;
@@ -627,6 +628,7 @@ export async function streamChatMessage(params: {
       message: params.message,
       conversationId: params.conversationId ?? null,
       useWebSearch: Boolean(params.useWebSearch),
+      experienceLevel: params.experienceLevel,
       isRetry: Boolean(params.isRetry),
       provider: params.provider ?? 'gemini',
       model: params.model,

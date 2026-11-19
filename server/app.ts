@@ -50,7 +50,6 @@ import {
   updateUserProfile,
 } from './db.js';
 import {
-  BUSINESS_MODULE_LABELS,
   GEMINI_MODELS,
   generateCompanyCreationSuite,
   generateLogoSvgOnly,
@@ -61,6 +60,7 @@ import {
   getGeminiApiKey,
   getProviderApiKey,
   mapGeminiErrorMessage,
+  normalizeBusinessModuleKey,
   regenerateWebsiteHtmlOnly,
   streamBusinessProject,
   streamConversationResponse,
@@ -138,6 +138,7 @@ function sendMappedGeminiJsonError(res: express.Response, err: unknown): void {
 
 export interface CreateAppOptions {
   streamConversation?: typeof streamConversationResponse;
+  streamBusiness?: typeof streamBusinessProject;
   summarizeHistory?: typeof summarizeConversationHistory;
   providerKeyChecker?: typeof getProviderApiKey;
   generateCompanySuite?: typeof generateCompanyCreationSuite;
@@ -145,6 +146,7 @@ export interface CreateAppOptions {
 
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const runConversationStream = options.streamConversation ?? streamConversationResponse;
+  const runBusinessStream = options.streamBusiness ?? streamBusinessProject;
   const runSummarizeHistory = options.summarizeHistory ?? summarizeConversationHistory;
   const resolveProviderKey = options.providerKeyChecker ?? getProviderApiKey;
   const runCompanySuite = options.generateCompanySuite ?? generateCompanyCreationSuite;
@@ -383,6 +385,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.get('/api/auth/me', (req, res) => {
     const ipHash = hashIp(getClientIp(req));
     const user = getAuthenticatedPublicUser(req);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
       user,
       quota: buildQuotaSnapshot(user, ipHash),
@@ -532,6 +535,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const recentDocuments = listUserDocuments(user.id).slice(0, 6);
     const subscriptions = listUserSubscriptions(user.id);
 
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
       user,
       planSpec: PLAN_SPECS[effectivePlan],
@@ -692,6 +696,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }
 
     const useWebSearch = Boolean(req.body?.useWebSearch);
+    const rawChatLevel = String(
+      req.body?.experienceLevel ?? user?.preferences?.defaultExperience ?? 'debutant'
+    ).trim();
+    const experienceLevel: ExperienceLevel =
+      rawChatLevel === 'intermediaire' || rawChatLevel === 'confirme'
+        ? rawChatLevel
+        : 'debutant';
     const requestedConvId =
       typeof req.body?.conversationId === 'string' && req.body.conversationId.trim()
         ? req.body.conversationId.trim()
@@ -841,6 +852,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         userMessage: message,
         attachment,
         useWebSearch,
+        experienceLevel,
         provider,
         model: requestedModel,
         plan: user ? resolveEffectivePlan(user) : 'free',
@@ -934,7 +946,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   app.post('/api/business/generate', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error:
@@ -961,8 +973,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       return;
     }
 
-    const moduleKey = String(req.body?.moduleKey ?? 'business_ideas').trim();
-    if (!Object.prototype.hasOwnProperty.call(BUSINESS_MODULE_LABELS, moduleKey)) {
+    const rawModuleKey = String(req.body?.moduleKey ?? 'business_ideas').trim();
+    const moduleKey = normalizeBusinessModuleKey(rawModuleKey);
+    if (!moduleKey) {
       res.status(400).json({
         code: 'INVALID_MODULE',
         error: 'Module Mode Business inconnu.',
@@ -1014,7 +1027,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     sendSseEvent(res, { type: 'status', label: 'NOVA structure votre plan en 7 étapes...' });
 
     try {
-      const result = await streamBusinessProject({
+      const result = await runBusinessStream({
         moduleKey,
         projectTitle,
         sector,
@@ -1201,7 +1214,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   app.post('/api/business/generate-logo', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1212,8 +1225,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`logo:burst:${user ? user.id : ipHash}`, 15, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;
@@ -1249,7 +1264,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   app.post('/api/business/generate-website', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1260,8 +1275,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`sitegen:burst:${user ? user.id : ipHash}`, 12, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;
@@ -1385,7 +1402,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
   // 7D. Content Creation Studio
   app.post('/api/content/generate', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1396,8 +1413,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`content:burst:${user ? user.id : ipHash}`, 25, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;
@@ -1430,7 +1449,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
   // 7E. Video Storyboard Creation
   app.post('/api/video/storyboard', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1441,8 +1460,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`video:burst:${user ? user.id : ipHash}`, 15, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;
@@ -1524,7 +1545,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   });
 
   app.post('/api/documents/generate', async (req, res) => {
-    if (!getGeminiApiKey()) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error: 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY).',
@@ -1535,8 +1556,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     const user = getAuthenticatedPublicUser(req);
     const burst = checkRateLimit(`doc:burst:${user ? user.id : ipHash}`, 20, 60_000);
     if (!burst.allowed) {
+      res.setHeader('Retry-After', String(burst.retryAfterSec));
       res.status(429).json({
         code: 'BURST_LIMIT',
+        retryAfterSec: burst.retryAfterSec,
         error: `Patiente ${burst.retryAfterSec} secondes.`,
       });
       return;

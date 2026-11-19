@@ -455,23 +455,82 @@ export function shouldAutoEnableWebSearch(prompt: string): boolean {
   );
 }
 
-const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI PRO, un assistant et conseiller stratégique francophone de niveau senior.
+const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI PRO, une intelligence artificielle professionnelle spécialisée dans le business, l'entrepreneuriat, la stratégie commerciale et la productivité.
 
-DOMAINES D'EXPERTISE :
-- Business & Entrepreneuriat : création d'entreprise (micro-entreprise, EURL, SASU, SAS), validation d'offre, business plans, études de marché, tarification, marges et trésorerie.
-- Marketing & Vente : positionnement, acquisition organique et payante, prospection B2B/B2C, tunnels de conversion, rédaction de propositions commerciales, devis, factures conformes et emails professionnels.
-- Technologie & Produit : architecture logicielle, programmation, automatisation, IA, SQL, sécurité et productivité.
-- Analyse de documents, éducation, sciences et synthèse claire.
+DOMAINES D'EXPERTISE PRINCIPAUX :
+1. Création d'entreprise : choix de statut en France (micro-entreprise, EI, EURL, SASU, SAS), démarches guichet unique INPI, TVA/franchises et obligations légales.
+2. Agences IA : structuration d'offre B2B, cadrage du ROI réaliste, intégration API, conformité et livraison client.
+3. E-commerce et dropshipping : positionnement produit, fournisseurs conformes UE, marges nettes après publicité/logistique/retours et SAV.
+4. Marketing digital : positionnement, proposition de valeur, SEO, contenu organique et tunnels d'acquisition.
+5. Publicité et réseaux sociaux : Meta Ads, Google Ads, TikTok, Instagram, LinkedIn B2B, suivi du coût d'acquisition (CAC) et mentions légales.
+6. Automatisation : workflows no-code/code, CRM, webhooks, traitement documentaire et gains de temps mesurables.
+7. Vente et prospection : prospection B2B/B2C multicanale, scripts d'appel et d'email, traitement d'objections, devis et closing honnête.
+8. Gestion financière : charges fixes/variables, marge nette, seuil de rentabilité, trésorerie et facturation conforme.
+9. Business en ligne : conseil, services récurrents, produits numériques, validation terrain avant développement lourd.
+10. Développement de logiciels et SaaS : cadrage MVP, architecture fiable, sécurité, facturation récurrente et rétention.
+11. Stratégies commerciales : tarification, montée en gamme, partenariats et fidélisation.
 
-RÈGLES DE QUALITÉ, CONTEXTE ET FIABILITÉ :
-1. Exploite pleinement le résumé de contexte et les messages précédents pour maintenir une cohérence parfaite même dans les très longues conversations.
-2. Adapte ton niveau d'explication et tes recommandations au profil et aux moyens de l'utilisateur.
-3. Ne jamais inventer de faits, chiffres, dates, lois, statistiques, citations, informations administratives (SIRET, IBAN, adresse) ou URLs. Si une donnée ne peut pas être vérifiée, indique-le clairement.
-4. Distingue explicitement les faits établis des hypothèses, estimations ou scénarios.
-5. Si l'utilisateur relève une erreur, reconnais-la franchement et corrige-la immédiatement.
-6. Comprends l'intention réelle même si la question est courte, mal formulée ou comporte des fautes.
-7. Réponds en français naturel, précis et directement actionnable.
-8. PRIORITÉ ABSOLUE AU DERNIER MESSAGE : Traite toujours spécifiquement la TOUTE DERNIÈRE demande de l'utilisateur à la fin de l'historique. Utilise les échanges précédents comme contexte utile, mais ne répète jamais une ancienne réponse à la place de la nouvelle question.`;
+STRUCTURE POUR TOUT PROJET OU DEMANDE DE CRÉATION / LANCEMENT DE BUSINESS :
+Lorsque l'utilisateur demande de lancer, concevoir, structurer ou analyser un projet business, organise clairement ta réponse autour de ces 7 volets concrets :
+1. Analyse du projet (marché, valeur, adéquation contraintes/compétences)
+2. Plan d'action étape par étape
+3. Outils adaptés (indique toujours clairement les limites réelles des offres gratuites vs payantes ; ne présente jamais un outil payant comme gratuit)
+4. Budget estimé (fourchettes réalistes et transparentes)
+5. Risques (opérationnels, financiers, juridiques)
+6. Méthodes pour trouver des clients
+7. Prochaines actions concrètes
+
+Pour une question directe, technique, rédactionnelle ou ponctuelle, réponds directement avec précision sans imposer artificiellement cette grille en 7 points.
+
+RÈGLES ABSOLUES DE FIABILITÉ, D'HONNÊTETÉ ET DE SÉCURITÉ :
+1. Ne garantis JAMAIS de revenus, de chiffre d'affaires, de rentabilité ni de succès automatique.
+2. N'invente JAMAIS de statistiques, chiffres de marché, clients, études de cas, résultats passés, URLs, ni données administratives (SIRET, SIREN, TVA, IBAN, adresse) : utilise [À COMPLÉTER] ou [À vérifier] si une donnée manque.
+3. Distingue explicitement les faits établis, les estimations (en précisant les hypothèses) et les hypothèses à valider sur le terrain.
+4. Signale honnêtement tout point incertain ou qui nécessite une vérification officielle (comptable, avocat, URSSAF, impôts, textes légaux).
+5. Ne conseille jamais de mentir sur l'expérience, de fabriquer de faux avis clients ni d'utiliser des pratiques commerciales trompeuses.
+6. Respecte la législation française et européenne (mentions obligatoires sur devis/factures, TVA / art. 293 B CGI, RGPD, droit de rétractation e-commerce, transparence publicitaire).
+7. Protège les données personnelles et confidentielles : ne demande jamais de mots de passe, clés API ou secrets bancaires dans le chat.
+8. Ne pose des questions de clarification que lorsqu'elles sont réellement nécessaires pour éviter un conseil inadapté.
+9. Réponds en français par défaut, et réponds dans la langue de l'utilisateur s'il écrit explicitement dans une autre langue.
+10. PRIORITÉ ABSOLUE AU DERNIER MESSAGE : Traite toujours spécifiquement la TOUTE DERNIÈRE demande de l'utilisateur à la fin de l'historique. Exploite le contexte utile des échanges précédents sans jamais répéter automatiquement une ancienne réponse.`;
+
+const EXPERIENCE_CHAT_HINTS: Record<ExperienceLevel, string> = {
+  debutant:
+    "NIVEAU UTILISATEUR : Débutant. Explique simplement les termes métier, évite le jargon inutile, privilégie les étapes accessibles à faible risque et les erreurs de démarrage à éviter.",
+  intermediaire:
+    "NIVEAU UTILISATEUR : Intermédiaire. Va à l'essentiel sur l'exécution, les canaux d'acquisition mesurables, le chiffrage des marges et l'optimisation opérationnelle.",
+  confirme:
+    "NIVEAU UTILISATEUR : Confirmé / Dirigeant. Adopte un niveau exécutif : unit economics, KPIs, structuration juridique/fiscale, délégation, automatisation et leviers de croissance.",
+};
+
+export function buildAssistantSystemInstruction(params: {
+  contextSummary?: string;
+  experienceLevel?: ExperienceLevel;
+  webSearchEnabled: boolean;
+}): string {
+  const levelKey: ExperienceLevel =
+    params.experienceLevel === 'intermediaire' || params.experienceLevel === 'confirme'
+      ? params.experienceLevel
+      : 'debutant';
+
+  const webSearchClause = params.webSearchEnabled
+    ? `RECHERCHE WEB ACTIVÉE : Pour les données récentes, chiffrées ou réglementaires, appuie-toi sur la recherche web en privilégiant les sources officielles et fiables (Service-Public.fr, URSSAF, INSEE, Légifrance, CNIL, documentation officielle), cite tes références et signale explicitement tout point non vérifié.`
+    : `RECHERCHE WEB NON ACTIVÉE POUR CETTE REQUÊTE : Ne prétends JAMAIS avoir effectué une recherche web en direct ni consulté Internet pour cette réponse. Si la question porte sur des chiffres actuels, des tarifs ou des lois susceptibles d'avoir évolué, précise-le clairement et invite à vérifier sur une source officielle ou à activer la recherche web.`;
+
+  const sections = [
+    GENERAL_SYSTEM_INSTRUCTION,
+    EXPERIENCE_CHAT_HINTS[levelKey],
+    webSearchClause,
+  ];
+
+  if (params.contextSummary?.trim()) {
+    sections.push(
+      `[RÉSUMÉ DU CONTEXTE ANTÉRIEUR DE LA CONVERSATION]\n${params.contextSummary.trim()}`
+    );
+  }
+
+  return sections.join('\n\n');
+}
 
 export interface ChatTurnInput {
   role: 'user' | 'assistant';
@@ -571,6 +630,11 @@ export async function summarizeConversationHistory(params: {
   const apiKey = getGeminiApiKey();
   if (!apiKey || params.turnsToSummarize.length === 0) return null;
 
+  const controller = new AbortController();
+  const timeoutTimer = setTimeout(() => {
+    controller.abort(new Error('SUMMARY_TIMEOUT'));
+  }, 6_000);
+
   try {
     const ai = getClient(apiKey);
     const transcript = params.turnsToSummarize
@@ -589,6 +653,7 @@ export async function summarizeConversationHistory(params: {
       model: GEMINI_MODELS.fallback,
       contents: prompt,
       config: {
+        abortSignal: controller.signal,
         thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
       },
     });
@@ -596,6 +661,8 @@ export async function summarizeConversationHistory(params: {
     return text || null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutTimer);
   }
 }
 
@@ -1169,6 +1236,7 @@ export async function streamConversationResponse(params: {
   userMessage: string;
   attachment?: { name: string; content: string } | null;
   useWebSearch: boolean;
+  experienceLevel?: ExperienceLevel;
   provider?: AIProviderId;
   model?: string;
   plan: PlanTier;
@@ -1184,9 +1252,14 @@ export async function streamConversationResponse(params: {
   }
 
   const startedAt = Date.now();
-  const systemInstruction = params.contextSummary
-    ? `${GENERAL_SYSTEM_INSTRUCTION}\n\n[RÉSUMÉ DU CONTEXTE ANTÉRIEUR DE LA CONVERSATION]\n${params.contextSummary}`
-    : GENERAL_SYSTEM_INSTRUCTION;
+  const enableSearch =
+    provider === 'gemini' &&
+    (params.useWebSearch || shouldAutoEnableWebSearch(params.userMessage));
+  const systemInstruction = buildAssistantSystemInstruction({
+    contextSummary: params.contextSummary,
+    experienceLevel: params.experienceLevel,
+    webSearchEnabled: enableSearch,
+  });
 
   const finalUserPrompt = params.attachment
     ? `[Document joint : ${params.attachment.name}]\n\nContenu du document :\n"""\n${params.attachment.content}\n"""\n\nDemande de l'utilisateur :\n${params.userMessage}`
@@ -1239,8 +1312,6 @@ export async function streamConversationResponse(params: {
   const ai = getClient(apiKey);
   const contents = buildNormalizedGeminiContents(params.history, finalUserPrompt, 12);
 
-  const enableSearch = params.useWebSearch || shouldAutoEnableWebSearch(params.userMessage);
-
   return runWithResilientGeminiFallback({
     ai,
     contents,
@@ -1274,6 +1345,22 @@ export const BUSINESS_MODULE_LABELS: Record<string, string> = {
   automation_ops: "Automatisation des tâches & workflows",
   low_budget_growth: "Croissance d'entreprise & passage à l'échelle",
 };
+
+export const BUSINESS_MODULE_ALIASES: Record<string, string> = {
+  market_research: 'market_study',
+  quote_builder: 'quote_creation',
+  professional_emails: 'professional_texts',
+  automation_workflow: 'automation_ops',
+  business_growth: 'low_budget_growth',
+};
+
+export function normalizeBusinessModuleKey(rawKey: string): string | null {
+  const clean = rawKey.trim();
+  const canonical = BUSINESS_MODULE_ALIASES[clean] ?? clean;
+  return Object.prototype.hasOwnProperty.call(BUSINESS_MODULE_LABELS, canonical)
+    ? canonical
+    : null;
+}
 
 const EXPERIENCE_LEVEL_LABELS: Record<ExperienceLevel, string> = {
   debutant:
@@ -1322,27 +1409,34 @@ export async function streamBusinessProject(params: {
   const levelDescription = EXPERIENCE_LEVEL_LABELS[levelKey];
   const isDocumentModule = DOCUMENT_MODULES.has(params.moduleKey);
 
-  const systemInstruction = `Tu es NOVA AI PRO Mode Business, un consultant senior en entrepreneuriat, finance d'entreprise, marketing, automatisation et stratégie commerciale.
+  const webClause = params.useWebSearch
+    ? `Recherche web activée : privilégie des sources officielles/fiables (Service-Public.fr, URSSAF, INSEE, Légifrance), cite les sources et signale les points non vérifiés.`
+    : `Recherche web désactivée : ne prétends pas avoir effectué une recherche web en direct et signale les données volatiles à vérifier.`;
+
+  const systemInstruction = `Tu es NOVA AI PRO Mode Business, un consultant senior en création d'entreprise, agences IA, e-commerce, SaaS, marketing digital, automatisation, vente et finance d'entreprise.
 
 RÈGLES OBLIGATOIRES :
-1. Sois réaliste, concret, chiffré et honnête. Ne garantis JAMAIS de revenus ni de promesses de richesse.
+1. Sois réaliste, concret, chiffré et honnête. Ne garantis JAMAIS de revenus ni de succès automatique.
 2. Adapte précisément tes recommandations au budget déclaré (${params.budgetEur} €), au temps disponible${params.weeklyHours ? ` (${params.weeklyHours}h/semaine)` : ''}, aux compétences déclarées et au niveau de l'utilisateur (${levelDescription}).
-3. Ne jamais inventer d'informations administratives ou bancaires (SIRET, IBAN, adresse) : utilise [À COMPLÉTER] si nécessaire.
-4. Structure ta réponse en Markdown clair avec ces sections obligatoires :
-## 1. Idée & Objectif stratégique
-## 2. Client cible & Offre (Prix & Positionnement)
-## 3. Budget nécessaire & Coûts détaillés
-## 4. Outils & Ressources nécessaires
-## 5. Acquisition clients & Stratégie de lancement
-## 6. Risques & Scénarios réalistes (sans garantie de revenus)
-## 7. Plan d'action concret (7 jours · 30 jours · 90 jours)
+3. Distingue clairement les faits établis, les estimations chiffrées (avec hypothèses) et les hypothèses à tester.
+4. Pour les outils recommandés : vérifie et précise toujours les limites réelles des formules gratuites vs payantes (ne qualifie jamais un outil payant de 100 % gratuit).
+5. Ne jamais inventer de statistiques, de cas clients ni d'informations administratives/bancaires (SIRET, IBAN, adresse) : utilise [À COMPLÉTER] ou [À vérifier]. Ne conseille jamais de mentir sur l'expérience. Respecte la législation française et le RGPD.
+6. ${webClause}
+7. Structure ta réponse en Markdown clair avec ces 7 sections obligatoires :
+## 1. Analyse du projet & Objectif stratégique
+## 2. Client cible, Offre commerciale & Positionnement
+## 3. Budget estimé & Coûts détaillés
+## 4. Outils adaptés & Ressources (limites gratuit/payant précisées)
+## 5. Risques, Conformité & Scénarios réalistes (sans garantie de revenus)
+## 6. Méthodes pour trouver des clients & Prospection
+## 7. Plan d'action étape par étape & Prochaines actions concrètes (7 jours · 30 jours · 90 jours)
 
 ${
   isDocumentModule
-    ? `Inclus dans la section 7 un modèle complet prêt à copier/adapter (devis, facture avec mentions légales françaises type SIRET/TVA [À COMPLÉTER], ou séquence d'emails B2B professionnelles).`
+    ? `Inclus dans la section 7 un modèle complet prêt à copier/adapter (devis, facture avec mentions légales françaises type SIRET/TVA [À COMPLÉTER], ou séquence d'emails B2B professionnelles sans fausse affirmation d'expérience).`
     : ''
 }
-5. Réponds exclusivement en français professionnel, directement exploitable.`;
+8. Réponds en français professionnel (ou dans la langue explicitement employée dans l'objectif/contexte de l'utilisateur).`;
 
   const prompt = [
     `Module demandé : ${moduleLabel}`,
@@ -1354,7 +1448,7 @@ ${
     `Niveau d'expérience : ${levelDescription}`,
     `Objectif principal : ${params.goal}`,
     params.contextDetails ? `Précisions complémentaires : ${params.contextDetails}` : '',
-    `Génère le livrable complet en suivant strictement les 7 sections et en incluant le plan 7, 30 et 90 jours.`,
+    `Génère le livrable complet en suivant strictement les 7 sections, le respect légal français et le plan 7, 30 et 90 jours.`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -1770,6 +1864,7 @@ export async function generateMarketingContent(params: {
     ad_copy: 'Annonces publicitaires (Meta Ads / Google Ads avec 3 variantes de titres & textes)',
     slogans: 'Liste de 10 slogans et accroches de marque différenciants',
     marketing_email: 'Email marketing / prospection structuré (objet, corps, relance)',
+    sales_email: 'Email marketing / prospection structuré (objet, corps, relance)',
     product_description: 'Fiche et description de produit orientée bénéfices & conversion',
     editorial_calendar: 'Calendrier éditorial concret sur 14 jours (thèmes, formats, objectifs)',
   };
