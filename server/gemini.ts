@@ -1,7 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { ExperienceLevel, PlanTier, SourceLink } from './types.js';
 export const GEMINI_MODELS = {
-  primary: 'gemini-3.5-flash-lite',
+  primary: 'gemini-3.1-flash-lite',
   fallback: 'gemini-3.1-flash-lite',
 } as const;
 
