@@ -5,8 +5,6 @@ export const GEMINI_MODELS = {
   fallback: 'gemini-3.1-flash-lite',
 } as const;
 
-} as const;
-
 const TTFT_PRIMARY_MS = 5_500;
 const TTFT_FALLBACK_MS = 14_000;
 const STREAM_INACTIVITY_MS = 35_000;
