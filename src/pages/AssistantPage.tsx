@@ -32,6 +32,7 @@ import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import type {
   AIProviderId,
   AIProviderInfo,
+  AlternativeFreeModel,
   ChatMessage,
   ConversationSummary,
   ExperienceLevel,
@@ -138,6 +139,9 @@ export function AssistantPage({
     attachment: AttachmentPayload | null;
     errorCode?: string | null;
     retryAfterSec?: number | null;
+    failedModel?: string | null;
+    alternativeModels?: AlternativeFreeModel[];
+    noAlternativeAvailable?: boolean;
   } | null>(null);
   const [retryCountdownSec, setRetryCountdownSec] = useState(0);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
@@ -227,10 +231,11 @@ export function AssistantPage({
     }
   };
 
-  useEffect(() => {
-    void fetchAIProviders()
-      .then((res) => {
-        setProviders(res.providers);
+  const refreshProviders = async (applyPreferredDefaults = false) => {
+    try {
+      const res = await fetchAIProviders();
+      setProviders(res.providers);
+      if (applyPreferredDefaults) {
         const prefProvider = user?.preferences?.preferredProvider || 'gemini';
         const match =
           res.providers.find((p) => p.id === prefProvider && p.configured) ||
@@ -242,10 +247,14 @@ export function AssistantPage({
           const hasPrefModel = prefModel && match.models.some((m) => m.id === prefModel);
           setSelectedModel(hasPrefModel ? prefModel : match.defaultModel);
         }
-      })
-      .catch(() => {
-        // Fallback to Gemini default if fetch fails
-      });
+      }
+    } catch {
+      // Fallback to Gemini default if fetch fails
+    }
+  };
+
+  useEffect(() => {
+    void refreshProviders(true);
   }, [user?.id, user?.preferences?.preferredProvider, user?.preferences?.preferredModel]);
 
   useEffect(() => {
@@ -433,13 +442,22 @@ export function AssistantPage({
 
   const sendMessage = async (
     promptText: string,
-    options?: { isRetry?: boolean; overrideAttachment?: AttachmentPayload | null }
+    options?: {
+      isRetry?: boolean;
+      overrideAttachment?: AttachmentPayload | null;
+      overrideModel?: string;
+    }
   ) => {
     const cleanPrompt = promptText.trim();
     if (!cleanPrompt || isGenerating || inFlightRef.current) return;
 
     const currentAttachment =
       options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
+    const modelToUse = options?.overrideModel || selectedModel;
+    if (options?.overrideModel) {
+      setSelectedProvider('gemini');
+      setSelectedModel(options.overrideModel);
+    }
 
     // Pre-flight offline check: preserve user's drafted text in composer and show clear banner
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -451,6 +469,9 @@ export function AssistantPage({
         attachment: currentAttachment,
         errorCode: 'NETWORK_ERROR',
         retryAfterSec: null,
+        failedModel: modelToUse,
+        alternativeModels: [],
+        noAlternativeAvailable: true,
       });
       return;
     }
@@ -459,7 +480,10 @@ export function AssistantPage({
     isNearBottomRef.current = true;
     const requestSeq = ++activeRequestSeqRef.current;
     const targetConvId = activeConvId;
-    const isRetry = Boolean(options?.isRetry);
+    const matchesFailedPrompt = Boolean(
+      lastFailedRequest && lastFailedRequest.prompt === cleanPrompt
+    );
+    const isRetry = Boolean(options?.isRetry || matchesFailedPrompt);
 
     setErrorBanner(null);
     setLastFailedRequest(null);
@@ -524,6 +548,7 @@ export function AssistantPage({
           id: assistantMsgId,
           role: 'assistant' as const,
           content: '',
+          modelUsed: modelToUse,
           createdAt: new Date().toISOString(),
           isStreaming: true,
         },
@@ -541,7 +566,7 @@ export function AssistantPage({
         experienceLevel,
         isRetry,
         provider: selectedProvider,
-        model: selectedModel,
+        model: modelToUse,
         attachment: currentAttachment
           ? { name: currentAttachment.name, content: currentAttachment.content }
           : null,
@@ -551,6 +576,15 @@ export function AssistantPage({
           if (requestSeq !== activeRequestSeqRef.current) return;
           setStatusLabel(label);
           if (convId && !targetConvId) setActiveConvId(convId);
+        },
+        onMeta: (model, convId) => {
+          if (requestSeq !== activeRequestSeqRef.current) return;
+          if (convId && !targetConvId) setActiveConvId(convId);
+          if (model) {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantMsgId ? { ...m, modelUsed: model } : m))
+            );
+          }
         },
         onDelta: (delta) => {
           if (requestSeq !== activeRequestSeqRef.current) return;
@@ -578,13 +612,15 @@ export function AssistantPage({
           if (payload.summarizedActive) {
             setSummarizedActive(true);
           }
+          setInput((prev) => (prev.trim() === cleanPrompt ? '' : prev));
+          setAttachment(null);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId
                 ? {
                     ...m,
                     isStreaming: false,
-                    modelUsed: payload.modelUsed ?? null,
+                    modelUsed: payload.modelUsed ?? m.modelUsed ?? modelToUse,
                     latencyMs: payload.latencyMs ?? null,
                   }
                 : m
@@ -619,6 +655,19 @@ export function AssistantPage({
           err instanceof ApiError && err.retryAfterSec && err.retryAfterSec > 0
             ? err.retryAfterSec
             : 0;
+        const failedModel =
+          err instanceof ApiError && err.failedModel ? err.failedModel : modelToUse;
+        const alternativeModels =
+          err instanceof ApiError ? err.alternativeModels : [];
+        const noAlternativeAvailable =
+          err instanceof ApiError ? err.noAlternativeAvailable : alternativeModels.length === 0;
+
+        // Preserve user's message directly in the composer input upon error
+        setInput((prev) => (prev.trim() ? prev : cleanPrompt));
+        if (currentAttachment) {
+          setAttachment((prev) => prev ?? currentAttachment);
+        }
+
         setErrorBanner(msg);
         setRetryCountdownSec(waitSec);
         setLastFailedRequest({
@@ -626,6 +675,9 @@ export function AssistantPage({
           attachment: currentAttachment,
           errorCode: errCode,
           retryAfterSec: waitSec || null,
+          failedModel,
+          alternativeModels,
+          noAlternativeAvailable,
         });
         setMessages((prev) =>
           prev.map((m) =>
@@ -637,11 +689,16 @@ export function AssistantPage({
                   errorCode: errCode,
                   errorMessage: msg,
                   retryAfterSec: waitSec || null,
+                  modelUsed: failedModel,
+                  failedModel,
+                  alternativeModels,
+                  noAlternativeAvailable,
                   content: m.content.trim().length > 0 ? m.content : msg,
                 }
               : m
           )
         );
+        void refreshProviders(false);
       }
     } finally {
       if (requestSeq === activeRequestSeqRef.current) {
@@ -931,6 +988,12 @@ export function AssistantPage({
             <h1 className="hidden sm:block truncate font-display text-sm font-semibold text-[#FAFAFA]">
               Assistant NOVA AI
             </h1>
+            <span
+              title="Modèle IA actuellement sélectionné"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-[#232332] bg-[#111117] px-2 py-0.5 text-[11px] text-[#B2B2C6]"
+            >
+              Modèle : <span className="font-mono text-[#E4E4EE]">{selectedModel}</span>
+            </span>
             {summarizedActive && (
               <span
                 title="Le contexte des messages les plus anciens est automatiquement résumé pour préserver la continuité."
@@ -982,8 +1045,12 @@ export function AssistantPage({
                         disabled={!p.configured}
                         className="bg-[#111117] text-white"
                       >
-                        {p.label} — {m.label}
-                        {!p.configured ? ' (non configuré)' : ''}
+                        {m.label}
+                        {!p.configured
+                          ? ' (non configuré)'
+                          : m.available === false
+                            ? ' (temporairement indisponible)'
+                            : ''}
                       </option>
                     ))
                   )}
@@ -1092,9 +1159,19 @@ export function AssistantPage({
                     ) : (
                       <div className="w-full rounded-xl border border-[#1F1F2D] bg-[#0E0E14] p-4 sm:p-5">
                         <div className="mb-2.5 flex items-center justify-between gap-2 text-xs text-[#8D8DA4]">
-                          <span className="font-semibold text-[#C4B5FD]">NOVA AI</span>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="font-semibold text-[#C4B5FD]">NOVA AI</span>
+                            {(msg.modelUsed || msg.failedModel) && (
+                              <span
+                                title="Modèle utilisé pour cette réponse"
+                                className="truncate rounded border border-[#232332] bg-[#14141D] px-1.5 py-0.5 font-mono text-[10px] text-[#9E9EB5]"
+                              >
+                                {msg.modelUsed || msg.failedModel}
+                              </span>
+                            )}
+                          </div>
                           {msg.latencyMs ? (
-                            <span className="font-mono tabular-nums text-[11px]">
+                            <span className="font-mono tabular-nums text-[11px] shrink-0">
                               {(msg.latencyMs / 1000).toFixed(2)}s
                             </span>
                           ) : null}
@@ -1120,49 +1197,80 @@ export function AssistantPage({
                               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
                               <div className="space-y-2.5">
                                 <p>{msg.errorMessage || msg.content}</p>
-                                {lastFailedRequest && (
-                                  <div className="flex flex-wrap gap-2">
-                                    {(lastFailedRequest.errorCode === 'AI_QUOTA_EXHAUSTED' ||
-                                      lastFailedRequest.errorCode === 'AI_RATE_LIMIT') &&
-                                      selectedModel !== 'gemini-3.1-flash-lite' && (
-                                        <button
-                                          type="button"
-                                          disabled={isGenerating}
-                                          onClick={() => {
-                                            setSelectedProvider('gemini');
-                                            setSelectedModel('gemini-3.1-flash-lite');
-                                          }}
-                                          className="inline-flex items-center gap-1.5 rounded-md border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-3 py-1.5 text-xs font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
-                                        >
-                                          Passer à Flash Lite (gratuit)
-                                        </button>
+                                {(() => {
+                                  const verifiedAlts =
+                                    msg.alternativeModels ??
+                                    lastFailedRequest?.alternativeModels ??
+                                    [];
+                                  const isUnavailableNotice =
+                                    Boolean(
+                                      msg.noAlternativeAvailable ??
+                                        lastFailedRequest?.noAlternativeAvailable
+                                    ) &&
+                                    verifiedAlts.length === 0 &&
+                                    (msg.errorCode === 'AI_QUOTA_EXHAUSTED' ||
+                                      msg.errorCode === 'AI_RATE_LIMIT' ||
+                                      msg.errorCode === 'AI_BUSY' ||
+                                      msg.errorCode === 'AI_MODEL_UNAVAILABLE' ||
+                                      msg.errorCode === 'AI_TIMEOUT');
+
+                                  return (
+                                    <>
+                                      {isUnavailableNotice && (
+                                        <p className="text-xs text-red-300/90">
+                                          Service temporairement indisponible : aucun modèle gratuit
+                                          alternatif disponible pour le moment. Aucun paiement ni
+                                          abonnement n&apos;est déclenché.
+                                        </p>
                                       )}
-                                    <button
-                                      type="button"
-                                      disabled={isGenerating || retryCountdownSec > 0}
-                                      onClick={() =>
-                                        void sendMessage(lastFailedRequest.prompt, {
-                                          isRetry: true,
-                                          overrideAttachment: lastFailedRequest.attachment,
-                                        })
-                                      }
-                                      className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
-                                    >
-                                      <RotateCcw className="h-3.5 w-3.5" />
-                                      {retryCountdownSec > 0
-                                        ? `Réessayer (${retryCountdownSec}s)`
-                                        : 'Réessayer'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={isGenerating}
-                                      onClick={restoreFailedRequestToInput}
-                                      className="inline-flex items-center gap-1.5 rounded-md border border-[#32324A] bg-[#161622] px-3 py-1.5 text-xs font-medium text-[#D6D6E4] hover:text-white disabled:opacity-50"
-                                    >
-                                      Remettre dans le champ
-                                    </button>
-                                  </div>
-                                )}
+                                      {lastFailedRequest && (
+                                        <div className="flex flex-wrap gap-2">
+                                          {verifiedAlts.map((alt) => (
+                                            <button
+                                              key={alt.id}
+                                              type="button"
+                                              disabled={isGenerating}
+                                              onClick={() =>
+                                                void sendMessage(lastFailedRequest.prompt, {
+                                                  isRetry: true,
+                                                  overrideAttachment: lastFailedRequest.attachment,
+                                                  overrideModel: alt.id,
+                                                })
+                                              }
+                                              className="inline-flex items-center gap-1.5 rounded-md border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-3 py-1.5 text-xs font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
+                                            >
+                                              Basculer vers {alt.label} et réessayer
+                                            </button>
+                                          ))}
+                                          <button
+                                            type="button"
+                                            disabled={isGenerating || retryCountdownSec > 0}
+                                            onClick={() =>
+                                              void sendMessage(lastFailedRequest.prompt, {
+                                                isRetry: true,
+                                                overrideAttachment: lastFailedRequest.attachment,
+                                              })
+                                            }
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
+                                          >
+                                            <RotateCcw className="h-3.5 w-3.5" />
+                                            {retryCountdownSec > 0
+                                              ? `Réessayer (${retryCountdownSec}s)`
+                                              : 'Réessayer'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={isGenerating}
+                                            onClick={restoreFailedRequestToInput}
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-[#32324A] bg-[#161622] px-3 py-1.5 text-xs font-medium text-[#D6D6E4] hover:text-white disabled:opacity-50"
+                                          >
+                                            Remettre dans le champ
+                                          </button>
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
@@ -1230,24 +1338,26 @@ export function AssistantPage({
             {errorBanner && (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                 <span className="flex-1 min-w-[200px]">{errorBanner}</span>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {lastFailedRequest && (
                     <>
-                      {(lastFailedRequest.errorCode === 'AI_QUOTA_EXHAUSTED' ||
-                        lastFailedRequest.errorCode === 'AI_RATE_LIMIT') &&
-                        selectedModel !== 'gemini-3.1-flash-lite' && (
-                          <button
-                            type="button"
-                            disabled={isGenerating}
-                            onClick={() => {
-                              setSelectedProvider('gemini');
-                              setSelectedModel('gemini-3.1-flash-lite');
-                            }}
-                            className="rounded border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-2.5 py-1 font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
-                          >
-                            Passer à Flash Lite (gratuit)
-                          </button>
-                        )}
+                      {(lastFailedRequest.alternativeModels ?? []).map((alt) => (
+                        <button
+                          key={alt.id}
+                          type="button"
+                          disabled={isGenerating}
+                          onClick={() =>
+                            void sendMessage(lastFailedRequest.prompt, {
+                              isRetry: true,
+                              overrideAttachment: lastFailedRequest.attachment,
+                              overrideModel: alt.id,
+                            })
+                          }
+                          className="rounded border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-2.5 py-1 font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
+                        >
+                          Utiliser {alt.label}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         disabled={isGenerating || retryCountdownSec > 0}
@@ -1267,7 +1377,7 @@ export function AssistantPage({
                         onClick={restoreFailedRequestToInput}
                         className="rounded border border-[#36364D] bg-[#161622] px-2.5 py-1 font-medium text-[#D6D6E4] hover:text-white disabled:opacity-50"
                       >
-                        Éditer
+                        Remettre dans le champ
                       </button>
                     </>
                   )}

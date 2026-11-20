@@ -7,7 +7,12 @@ export interface AIProviderInfo {
   label: string;
   configured: boolean;
   defaultModel: string;
-  models: Array<{ id: string; label: string }>;
+  models: Array<{
+    id: string;
+    label: string;
+    available?: boolean;
+    unavailableReason?: string | null;
+  }>;
   note: string;
 }
 

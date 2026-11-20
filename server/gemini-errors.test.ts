@@ -11,7 +11,10 @@ const {
   extractHttpStatus,
   extractRetryAfterMs,
   generateContentWithResilience,
+  getAvailableAIProviders,
+  getVerifiedAlternativeFreeModels,
   mapGeminiErrorMessage,
+  markGeminiModelUnavailable,
   resetGeminiHealthStateForTests,
   resolveConfiguredFallbackModel,
   runWithResilientGeminiFallback,
@@ -49,6 +52,7 @@ function makeHttpError(
 let server: http.Server;
 let baseUrl = '';
 let nextChatError: Error | null = null;
+let nextChatSuccess: { text: string; modelUsed?: string } | null = null;
 let nextCompanyError: Error | null = null;
 
 before(async () => {
@@ -56,9 +60,21 @@ before(async () => {
   const app = createApp({
     providerKeyChecker: () => 'test-key-present',
     summarizeHistory: async () => null,
-    streamConversation: async () => {
+    streamConversation: async ({ model, callbacks }) => {
+      const selectedModel = model || GEMINI_MODELS.primary;
+      callbacks.onModelSelected?.(selectedModel);
       if (nextChatError) {
         throw nextChatError;
+      }
+      if (nextChatSuccess) {
+        const finalModel = nextChatSuccess.modelUsed || selectedModel;
+        callbacks.onDelta(nextChatSuccess.text);
+        return {
+          fullText: nextChatSuccess.text,
+          sources: [],
+          modelUsed: finalModel,
+          latencyMs: 25,
+        };
       }
       throw new Error('Unexpected non-error invocation in gemini-errors.test');
     },
@@ -91,6 +107,7 @@ after(async () => {
 beforeEach(() => {
   resetGeminiHealthStateForTests();
   nextChatError = null;
+  nextChatSuccess = null;
   nextCompanyError = null;
 });
 
@@ -600,4 +617,219 @@ test('routes HTTP (/api/chat SSE & /api/business/company-suite JSON) exposent cl
   assert.equal(cTimeout.status, 504);
   const cTimeoutBody = (await cTimeout.json()) as Record<string, unknown>;
   assert.equal(cTimeoutBody.code, 'AI_TIMEOUT');
+
+  // 6. /api/business/company-suite JSON -> HTTP 500 avec masquage strict des clés API
+  nextCompanyError = new Error(
+    'Backend failure AIzaSySecretTestKey1234567890 ?key=SecretQueryParam Bearer sk_live_secret_token'
+  );
+  const c500 = await fetch(`${baseUrl}/api/business/company-suite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Nova Studio',
+      sector: 'Conseil IA',
+      budgetEur: 1500,
+      goal: 'Trouver 5 clients',
+    }),
+  });
+  assert.equal(c500.status, 500);
+  const c500Body = (await c500.json()) as Record<string, unknown>;
+  assert.equal(c500Body.code, 'AI_ERROR');
+  assert.doesNotMatch(String(c500Body.error), /AIzaSySecretTestKey|SecretQueryParam|sk_live_secret_token/);
+});
+
+test('vérification réelle des modèles gratuits alternatifs (429, fallback désactivé, saturation totale et /api/ai/providers)', async () => {
+  const prevFallback = process.env.GEMINI_FALLBACK_MODEL;
+  try {
+    delete process.env.GEMINI_FALLBACK_MODEL;
+
+    // 1. Aucun alternatif prétendu si la clé API est absente
+    const noKeyAlts = getVerifiedAlternativeFreeModels(GEMINI_MODELS.primary, {
+      aiConfigured: false,
+    });
+    assert.deepEqual(noKeyAlts, []);
+
+    // 2. HTTP 429 sur le modèle principal -> propose uniquement Flash Lite réellement disponible
+    nextChatError = makeHttpError(
+      429,
+      'You exceeded your current quota, limit: 0'
+    );
+    const rPrimary429 = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Plan action business 0 €',
+        model: GEMINI_MODELS.primary,
+      }),
+    });
+    const evPrimary429 = parseSsePayloads(await rPrimary429.text()).find((e) => e.type === 'error');
+    assert.ok(evPrimary429);
+    assert.equal(evPrimary429.status, 429);
+    assert.equal(evPrimary429.failedModel, GEMINI_MODELS.primary);
+    assert.equal(evPrimary429.noAlternativeAvailable, false);
+    assert.deepEqual(
+      (evPrimary429.alternativeModels as Array<{ id: string }>).map((m) => m.id),
+      [GEMINI_MODELS.fallback]
+    );
+
+    // /api/ai/providers reflète la disponibilité réelle
+    const providersAfterPrimary429 = await (await fetch(`${baseUrl}/api/ai/providers`)).json() as {
+      providers: Array<{ models: Array<{ id: string; available?: boolean }> }>;
+    };
+    const modelsAfterPrimary = providersAfterPrimary429.providers[0].models;
+    assert.equal(modelsAfterPrimary.find((m) => m.id === GEMINI_MODELS.primary)?.available, false);
+    assert.equal(modelsAfterPrimary.find((m) => m.id === GEMINI_MODELS.fallback)?.available, true);
+
+    // 3. HTTP 429 ensuite sur Flash Lite aussi -> aucun modèle alternatif disponible, message clair
+    nextChatError = makeHttpError(429, 'RESOURCE_EXHAUSTED: Quota exceeded per day');
+    const rBoth429 = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Plan action business 0 €',
+        model: GEMINI_MODELS.fallback,
+      }),
+    });
+    const evBoth429 = parseSsePayloads(await rBoth429.text()).find((e) => e.type === 'error');
+    assert.ok(evBoth429);
+    assert.equal(evBoth429.status, 429);
+    assert.equal(evBoth429.failedModel, GEMINI_MODELS.fallback);
+    assert.equal(evBoth429.noAlternativeAvailable, true);
+    assert.deepEqual(evBoth429.alternativeModels, []);
+    assert.match(String(evBoth429.error), /service est temporairement indisponible/i);
+    assert.match(String(evBoth429.error), /Aucun paiement ni facturation/i);
+
+    const providersAfterBoth429 = getAvailableAIProviders({ aiConfigured: true });
+    assert.ok(providersAfterBoth429[0].models.every((m) => m.available === false));
+
+    // 4. Si GEMINI_FALLBACK_MODEL=none, jamais de modèle alternatif prétendu disponible
+    resetGeminiHealthStateForTests();
+    process.env.GEMINI_FALLBACK_MODEL = 'none';
+    markGeminiModelUnavailable(GEMINI_MODELS.primary, makeHttpError(429, 'Quota exceeded'));
+    const mappedDisabledFallback = mapGeminiErrorMessage(
+      makeHttpError(429, 'Quota exceeded'),
+      { failedModel: GEMINI_MODELS.primary, aiConfigured: true }
+    );
+    assert.equal(mappedDisabledFallback.noAlternativeAvailable, true);
+    assert.deepEqual(mappedDisabledFallback.alternativeModels, []);
+    assert.match(mappedDisabledFallback.message, /aucun autre modèle gratuit/i);
+  } finally {
+    if (prevFallback === undefined) delete process.env.GEMINI_FALLBACK_MODEL;
+    else process.env.GEMINI_FALLBACK_MODEL = prevFallback;
+  }
+});
+
+test('erreurs 429, 500, 503 et timeout préservent intact l’historique de conversation et permettent le réessai sans doublon', async () => {
+  // Créer un compte utilisateur authentifié pour tester la persistance complète en base
+  const regRes = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'error-history@nova-test.local',
+      password: 'Password123!',
+      displayName: 'Historique Test',
+    }),
+  });
+  assert.equal(regRes.status, 201);
+  const setCookie = regRes.headers.get('set-cookie');
+  assert.ok(setCookie);
+  const cookieHeader = setCookie.split(';')[0];
+
+  // Tour 1 réussi
+  nextChatError = null;
+  nextChatSuccess = { text: 'Réponse initiale réussie.', modelUsed: GEMINI_MODELS.primary };
+  const turn1Res = await fetch(`${baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+    body: JSON.stringify({ message: 'Première question business' }),
+  });
+  const turn1Done = parseSsePayloads(await turn1Res.text()).find((e) => e.type === 'done');
+  assert.ok(turn1Done && typeof turn1Done.conversationId === 'string');
+  const convId = String(turn1Done.conversationId);
+
+  // Tour 2 échoue avec HTTP 429, puis HTTP 500, puis HTTP 503, puis timeout 504
+  const simulatedFailures: Array<{ err: Error; expectedStatus: number; expectedCode: string }> = [
+    {
+      err: makeHttpError(429, 'You exceeded your current quota for today'),
+      expectedStatus: 429,
+      expectedCode: 'AI_QUOTA_EXHAUSTED',
+    },
+    {
+      err: new Error('Internal server failure 500'),
+      expectedStatus: 500,
+      expectedCode: 'AI_ERROR',
+    },
+    {
+      err: makeHttpError(503, 'Model overloaded'),
+      expectedStatus: 503,
+      expectedCode: 'AI_BUSY',
+    },
+    {
+      err: new Error('TTFT_TIMEOUT'),
+      expectedStatus: 504,
+      expectedCode: 'AI_TIMEOUT',
+    },
+  ];
+
+  for (const [idx, scenario] of simulatedFailures.entries()) {
+    resetGeminiHealthStateForTests();
+    nextChatSuccess = null;
+    nextChatError = scenario.err;
+    const failRes = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({
+        conversationId: convId,
+        message: 'Question 2 à conserver',
+        isRetry: idx > 0,
+        model: GEMINI_MODELS.primary,
+      }),
+    });
+    const failEv = parseSsePayloads(await failRes.text()).find((e) => e.type === 'error');
+    assert.ok(failEv);
+    assert.equal(failEv.status, scenario.expectedStatus);
+    assert.equal(failEv.code, scenario.expectedCode);
+  }
+
+  // Vérifier que l'historique complet (Tour 1 + Question 2 sans doublon) est intact
+  const detailBeforeRetry = await (
+    await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(convId)}`, {
+      headers: { Cookie: cookieHeader },
+    })
+  ).json() as { messages: Array<{ role: string; content: string; modelUsed?: string }> };
+  assert.equal(detailBeforeRetry.messages.length, 3);
+  assert.equal(detailBeforeRetry.messages[0].content, 'Première question business');
+  assert.equal(detailBeforeRetry.messages[1].content, 'Réponse initiale réussie.');
+  assert.equal(detailBeforeRetry.messages[2].content, 'Question 2 à conserver');
+
+  // Réessai avec le modèle alternatif gratuit Flash Lite -> succès sans doublon
+  nextChatError = null;
+  nextChatSuccess = {
+    text: 'Réponse via modèle alternatif gratuit.',
+    modelUsed: GEMINI_MODELS.fallback,
+  };
+  const retryRes = await fetch(`${baseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+    body: JSON.stringify({
+      conversationId: convId,
+      message: 'Question 2 à conserver',
+      isRetry: true,
+      model: GEMINI_MODELS.fallback,
+    }),
+  });
+  const retryEvents = parseSsePayloads(await retryRes.text());
+  const retryDone = retryEvents.find((e) => e.type === 'done');
+  assert.ok(retryDone);
+  assert.equal(retryDone.modelUsed, GEMINI_MODELS.fallback);
+
+  const detailAfterRetry = await (
+    await fetch(`${baseUrl}/api/conversations/${encodeURIComponent(convId)}`, {
+      headers: { Cookie: cookieHeader },
+    })
+  ).json() as { messages: Array<{ role: string; content: string; modelUsed?: string | null }> };
+  assert.equal(detailAfterRetry.messages.length, 4);
+  assert.equal(detailAfterRetry.messages[2].content, 'Question 2 à conserver');
+  assert.equal(detailAfterRetry.messages[3].content, 'Réponse via modèle alternatif gratuit.');
+  assert.equal(detailAfterRetry.messages[3].modelUsed, GEMINI_MODELS.fallback);
 });

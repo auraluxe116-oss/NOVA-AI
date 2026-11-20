@@ -16,12 +16,23 @@ export type PlanTier = 'free';
 export type ExperienceLevel = 'debutant' | 'intermediaire' | 'confirme';
 export type AIProviderId = 'gemini';
 
+export interface AlternativeFreeModel {
+  id: string;
+  label: string;
+  provider: AIProviderId;
+}
+
 export interface AIProviderInfo {
   id: AIProviderId;
   label: string;
   configured: boolean;
   defaultModel: string;
-  models: Array<{ id: string; label: string }>;
+  models: Array<{
+    id: string;
+    label: string;
+    available?: boolean;
+    unavailableReason?: string | null;
+  }>;
   note: string;
 }
 
@@ -83,6 +94,9 @@ export interface ChatMessage {
   errorCode?: string | null;
   errorMessage?: string | null;
   retryAfterSec?: number | null;
+  failedModel?: string | null;
+  alternativeModels?: AlternativeFreeModel[];
+  noAlternativeAvailable?: boolean;
 }
 
 export interface ConversationSummary {

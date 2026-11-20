@@ -1,6 +1,7 @@
 import type {
   AIProviderId,
   AIProviderInfo,
+  AlternativeFreeModel,
   BusinessProject,
   ChatMessage,
   CompanyCreationResult,
@@ -21,18 +22,48 @@ export class ApiError extends Error {
   status: number;
   code: string;
   retryAfterSec: number | null;
+  failedModel: string | null;
+  alternativeModels: AlternativeFreeModel[];
+  noAlternativeAvailable: boolean;
 
   constructor(
     message: string,
     status = 500,
     code = 'API_ERROR',
-    retryAfterSec: number | null = null
+    retryAfterSec: number | null = null,
+    options?: {
+      failedModel?: string | null;
+      alternativeModels?: AlternativeFreeModel[];
+      noAlternativeAvailable?: boolean;
+    }
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.retryAfterSec = retryAfterSec;
+    this.failedModel = options?.failedModel ?? null;
+    this.alternativeModels = Array.isArray(options?.alternativeModels)
+      ? options.alternativeModels
+      : [];
+    this.noAlternativeAvailable = Boolean(options?.noAlternativeAvailable);
   }
+}
+
+function parseAlternativeModels(raw: unknown): AlternativeFreeModel[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is AlternativeFreeModel =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof (item as { id?: unknown }).id === 'string' &&
+        typeof (item as { label?: unknown }).label === 'string'
+    )
+    .map((item) => ({
+      id: item.id,
+      label: item.label,
+      provider: 'gemini' as const,
+    }));
 }
 
 function normalizeNetworkError(err: unknown): ApiError {
@@ -151,7 +182,12 @@ async function requestJson<T>(
           String(parsed.error || fallbackErr),
           res.status,
           String(parsed.code || (res.status === 404 ? 'API_NOT_FOUND' : 'HTTP_ERROR')),
-          retryAfterSec
+          retryAfterSec,
+          {
+            failedModel: typeof parsed.failedModel === 'string' ? parsed.failedModel : null,
+            alternativeModels: parseAlternativeModels(parsed.alternativeModels),
+            noAlternativeAvailable: Boolean(parsed.noAlternativeAvailable),
+          }
         );
       }
 
@@ -637,7 +673,12 @@ async function consumeSseStream(
       String(errObj.error || fallbackMessage),
       res.status,
       String(errObj.code || (res.status === 404 ? 'API_NOT_FOUND' : 'STREAM_HTTP_ERROR')),
-      retryAfterSec
+      retryAfterSec,
+      {
+        failedModel: typeof errObj.failedModel === 'string' ? errObj.failedModel : null,
+        alternativeModels: parseAlternativeModels(errObj.alternativeModels),
+        noAlternativeAvailable: Boolean(errObj.noAlternativeAvailable),
+      }
     );
   }
 
@@ -700,7 +741,12 @@ async function consumeSseStream(
           String(event.error || 'Erreur lors de la génération IA.'),
           errStatus,
           String(event.code || 'STREAM_ERROR'),
-          retryAfterSec
+          retryAfterSec,
+          {
+            failedModel: typeof event.failedModel === 'string' ? event.failedModel : null,
+            alternativeModels: parseAlternativeModels(event.alternativeModels),
+            noAlternativeAvailable: Boolean(event.noAlternativeAvailable),
+          }
         );
       }
     }
@@ -759,6 +805,7 @@ export async function streamChatMessage(params: {
   guestHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   signal: AbortSignal;
   onStatus?: (label: string, conversationId?: string | null) => void;
+  onMeta?: (model: string, conversationId?: string | null) => void;
   onDelta: (delta: string) => void;
   onSources?: (sources: SourceLink[]) => void;
   onDone: (payload: {
@@ -785,6 +832,7 @@ export async function streamChatMessage(params: {
     params.signal,
     {
       onStatus: params.onStatus,
+      onMeta: params.onMeta,
       onDelta: params.onDelta,
       onSources: params.onSources,
       onDone: (payload) =>

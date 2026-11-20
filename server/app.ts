@@ -65,7 +65,9 @@ import {
   getAvailableAIProviders,
   getGeminiApiKey,
   getProviderApiKey,
+  isGeminiModelInCooldown,
   mapGeminiErrorMessage,
+  markGeminiModelUnavailable,
   normalizeBusinessModuleKey,
   regenerateWebsiteHtmlOnly,
   streamBusinessProject,
@@ -152,20 +154,37 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
-function sendMappedGeminiJsonError(res: express.Response, err: unknown, contextLabel = 'api'): void {
-  const mapped = mapGeminiErrorMessage(err);
+function sendMappedGeminiJsonError(
+  res: express.Response,
+  err: unknown,
+  contextLabel = 'api',
+  options?: { failedModel?: string | null; aiConfigured?: boolean }
+): void {
+  const preMapped = mapGeminiErrorMessage(err, options);
+  if (
+    preMapped.failedModel &&
+    (preMapped.status === 429 || preMapped.status === 503 || preMapped.status === 504) &&
+    !isGeminiModelInCooldown(preMapped.failedModel)
+  ) {
+    markGeminiModelUnavailable(preMapped.failedModel, err);
+  }
+  const mapped = mapGeminiErrorMessage(err, options);
   if (mapped.retryAfterSec) {
     res.setHeader('Retry-After', String(mapped.retryAfterSec));
   }
   console.error(`[NOVA AI ${contextLabel}]`, {
     status: mapped.status,
     code: mapped.code,
+    failedModel: mapped.failedModel,
     message: sanitizeDbErrorMessage(mapped.message),
   });
   res.status(mapped.status).json({
     code: mapped.code,
     error: mapped.message,
     retryAfterSec: mapped.retryAfterSec ?? null,
+    failedModel: mapped.failedModel,
+    alternativeModels: mapped.alternativeModels,
+    noAlternativeAvailable: mapped.noAlternativeAvailable,
   });
 }
 
@@ -323,8 +342,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   );
 
   app.get('/api/ai/providers', (_req, res) => {
+    const aiConfigured = Boolean(resolveProviderKey('gemini'));
     res.setHeader('Cache-Control', 'public, max-age=300');
-    res.json({ providers: getAvailableAIProviders() });
+    res.json({ providers: getAvailableAIProviders({ aiConfigured }) });
   });
 
   // 3. Authentication, Recovery & Profile
@@ -861,6 +881,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
+        failedModel: requestedModel || GEMINI_MODELS.primary,
+        alternativeModels: [],
+        noAlternativeAvailable: true,
         error:
           'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoute-la dans Settings > Secrets (niveau gratuit Google AI Studio).',
       });
@@ -898,6 +921,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(429).json({
           code: 'BURST_LIMIT',
           retryAfterSec: burst.retryAfterSec,
+          failedModel: requestedModel || GEMINI_MODELS.primary,
+          alternativeModels: [],
+          noAlternativeAvailable: true,
           error: `Cadence de requêtes trop rapide pour le service gratuit. Aucune facturation déclenchée : patientez ${burst.retryAfterSec} seconde(s).`,
         });
         return;
@@ -1090,6 +1116,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       conversationId: activeConversationId,
     });
 
+    let activeModelForRequest: string =
+      requestedModel === GEMINI_MODELS.fallback
+        ? GEMINI_MODELS.fallback
+        : GEMINI_MODELS.primary;
+
     try {
       const result = await runConversationStream({
         history: historyForModel,
@@ -1107,6 +1138,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             sendSseEvent(res, { type: 'status', label, conversationId: activeConversationId });
           },
           onModelSelected: (model) => {
+            activeModelForRequest = model;
             sendSseEvent(res, { type: 'meta', model, conversationId: activeConversationId });
           },
           onDelta: (text) => {
@@ -1152,10 +1184,25 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.end();
         return;
       }
-      const mapped = mapGeminiErrorMessage(err);
+      const aiConfigured = Boolean(resolveProviderKey('gemini'));
+      const preliminary = mapGeminiErrorMessage(err, {
+        failedModel: activeModelForRequest,
+        aiConfigured,
+      });
+      if (
+        (preliminary.status === 429 || preliminary.status === 503 || preliminary.status === 504) &&
+        !isGeminiModelInCooldown(activeModelForRequest)
+      ) {
+        markGeminiModelUnavailable(activeModelForRequest, err);
+      }
+      const mapped = mapGeminiErrorMessage(err, {
+        failedModel: activeModelForRequest,
+        aiConfigured,
+      });
       console.error('[NOVA AI chat SSE]', {
         status: mapped.status,
         code: mapped.code,
+        failedModel: mapped.failedModel,
         message: sanitizeDbErrorMessage(mapped.message),
       });
       sendSseEvent(res, {
@@ -1164,6 +1211,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         code: mapped.code,
         error: mapped.message,
         retryAfterSec: mapped.retryAfterSec ?? null,
+        failedModel: mapped.failedModel,
+        alternativeModels: mapped.alternativeModels,
+        noAlternativeAvailable: mapped.noAlternativeAvailable,
       });
       res.end();
     } finally {
@@ -1288,6 +1338,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
     sendSseEvent(res, { type: 'status', label: 'NOVA structure votre plan en 7 étapes...' });
 
+    let activeModelForBusiness: string = GEMINI_MODELS.primary;
+
     try {
       const result = await runBusinessStream({
         moduleKey,
@@ -1306,6 +1358,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             sendSseEvent(res, { type: 'status', label });
           },
           onModelSelected: (model) => {
+            activeModelForBusiness = model;
             sendSseEvent(res, { type: 'meta', model });
           },
           onDelta: (text) => {
@@ -1350,10 +1403,25 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.end();
         return;
       }
-      const mapped = mapGeminiErrorMessage(err);
+      const aiConfigured = Boolean(resolveProviderKey('gemini'));
+      const preliminary = mapGeminiErrorMessage(err, {
+        failedModel: activeModelForBusiness,
+        aiConfigured,
+      });
+      if (
+        (preliminary.status === 429 || preliminary.status === 503 || preliminary.status === 504) &&
+        !isGeminiModelInCooldown(activeModelForBusiness)
+      ) {
+        markGeminiModelUnavailable(activeModelForBusiness, err);
+      }
+      const mapped = mapGeminiErrorMessage(err, {
+        failedModel: activeModelForBusiness,
+        aiConfigured,
+      });
       console.error('[NOVA AI business SSE]', {
         status: mapped.status,
         code: mapped.code,
+        failedModel: mapped.failedModel,
         message: sanitizeDbErrorMessage(mapped.message),
       });
       sendSseEvent(res, {
@@ -1362,6 +1430,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         code: mapped.code,
         error: mapped.message,
         retryAfterSec: mapped.retryAfterSec ?? null,
+        failedModel: mapped.failedModel,
+        alternativeModels: mapped.alternativeModels,
+        noAlternativeAvailable: mapped.noAlternativeAvailable,
       });
       res.end();
     } finally {
@@ -1455,7 +1526,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           contextDetails,
         });
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'business/company-suite', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
         return;
       }
 
@@ -1539,7 +1613,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           styleHint,
         });
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'business/generate-logo', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
         return;
       }
 
@@ -1604,7 +1681,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           customInstructions,
         });
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'business/generate-website', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
         return;
       }
 
@@ -1765,7 +1845,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
-        sendMappedGeminiJsonError(res, err, 'content/generate');
+        sendMappedGeminiJsonError(res, err, 'content/generate', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
       }
     })
   );
@@ -1819,7 +1902,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'video/storyboard', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
       }
     })
   );
@@ -1927,7 +2013,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           context,
         });
       } catch (err) {
-        sendMappedGeminiJsonError(res, err, 'documents/generate');
+        sendMappedGeminiJsonError(res, err, 'documents/generate', {
+          failedModel: GEMINI_MODELS.primary,
+          aiConfigured: Boolean(resolveProviderKey('gemini')),
+        });
         return;
       }
 

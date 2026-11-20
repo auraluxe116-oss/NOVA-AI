@@ -19,18 +19,55 @@ const TTFT_FALLBACK_MS = 16_000;
 const STREAM_INACTIVITY_MS = 35_000;
 const GENERATE_TIMEOUT_MS = 35_000;
 const COOLDOWN_MS = 90_000;
+const RATE_LIMIT_COOLDOWN_MS = 30_000;
+const QUOTA_EXHAUSTED_COOLDOWN_MS = 5 * 60_000;
+const MODEL_UNAVAILABLE_COOLDOWN_MS = 5 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 600;
 const MAX_AUTO_RETRY_WAIT_MS = 10_000;
 
-let primaryCooldownUntil = 0;
-let fallbackCooldownUntil = 0;
+export interface AlternativeFreeModel {
+  id: string;
+  label: string;
+  provider: AIProviderId;
+}
+
+export const FREE_MODEL_CATALOG: AlternativeFreeModel[] = [
+  {
+    id: GEMINI_MODELS.primary,
+    label: 'Gemini 4 Hydrogen (Gratuit · Principal)',
+    provider: 'gemini',
+  },
+  {
+    id: GEMINI_MODELS.fallback,
+    label: 'Gemini 3.1 Flash Lite (Gratuit · Rapide)',
+    provider: 'gemini',
+  },
+];
+
+interface ModelHealthEntry {
+  cooldownUntil: number;
+  category: string;
+  reason: string;
+}
+
+const modelHealthMap = new Map<string, ModelHealthEntry>();
+
+export function isGeminiModelInCooldown(modelId: string): boolean {
+  const entry = modelHealthMap.get(modelId);
+  if (!entry) return false;
+  if (Date.now() >= entry.cooldownUntil) {
+    modelHealthMap.delete(modelId);
+    return false;
+  }
+  return true;
+}
 
 function isPrimaryHealthy(): boolean {
-  return Date.now() >= primaryCooldownUntil;
+  return !isGeminiModelInCooldown(GEMINI_MODELS.primary);
 }
 
 function isFallbackHealthy(): boolean {
-  return Date.now() >= fallbackCooldownUntil;
+  return !isGeminiModelInCooldown(GEMINI_MODELS.fallback);
 }
 
 function sanitizeLogError(reason: unknown): string {
@@ -42,25 +79,81 @@ function sanitizeLogError(reason: unknown): string {
     .slice(0, 220);
 }
 
-function tripPrimaryCooldown(reason: unknown): void {
-  primaryCooldownUntil = Date.now() + COOLDOWN_MS;
-  console.warn(
-    `[NOVA AI] Bascule temporaire depuis ${GEMINI_MODELS.primary} pendant 90s :`,
-    sanitizeLogError(reason)
-  );
+export function clearGeminiModelCooldown(modelId: string): void {
+  modelHealthMap.delete(modelId);
 }
 
-function tripFallbackCooldown(reason: unknown): void {
-  fallbackCooldownUntil = Date.now() + COOLDOWN_MS;
+export function markGeminiModelUnavailable(modelId: string, reason: unknown): void {
+  const classified = classifyGeminiError(reason);
+  if (classified.category === 'aborted' || classified.category === 'auth') {
+    return;
+  }
+
+  let durationMs = COOLDOWN_MS;
+  if (classified.category === 'quota_exhausted') {
+    durationMs = Math.max(classified.retryAfterMs ?? 0, QUOTA_EXHAUSTED_COOLDOWN_MS);
+  } else if (classified.category === 'model_unavailable') {
+    durationMs = MODEL_UNAVAILABLE_COOLDOWN_MS;
+  } else if (classified.category === 'rate_limit') {
+    durationMs = Math.max(classified.retryAfterMs ?? 0, RATE_LIMIT_COOLDOWN_MS);
+  } else if (classified.category === 'unavailable' || classified.category === 'timeout' || classified.category === 'network') {
+    durationMs = Math.max(classified.retryAfterMs ?? 0, COOLDOWN_MS);
+  } else {
+    return;
+  }
+
+  modelHealthMap.set(modelId, {
+    cooldownUntil: Date.now() + durationMs,
+    category: classified.category,
+    reason: sanitizeLogError(reason),
+  });
   console.warn(
-    `[NOVA AI] Modèle de secours indisponible temporairement pendant 90s :`,
+    `[NOVA AI] Modèle ${modelId} temporairement indisponible (${Math.round(durationMs / 1000)}s · ${classified.category}) :`,
     sanitizeLogError(reason)
   );
 }
 
 export function resetGeminiHealthStateForTests(): void {
-  primaryCooldownUntil = 0;
-  fallbackCooldownUntil = 0;
+  modelHealthMap.clear();
+}
+
+export function getGeminiModelLabel(modelId: string): string {
+  return FREE_MODEL_CATALOG.find((m) => m.id === modelId)?.label || modelId;
+}
+
+function isAlternativeAllowedByEnv(candidateId: string): boolean {
+  const envOverride = process.env.GEMINI_FALLBACK_MODEL?.trim();
+  if (envOverride === undefined) {
+    return true;
+  }
+  const lower = envOverride.toLowerCase();
+  if (!envOverride || lower === 'none' || lower === 'off' || lower === 'false' || lower === 'disabled') {
+    return false;
+  }
+  if (envOverride !== GEMINI_MODELS.primary && envOverride !== GEMINI_MODELS.fallback) {
+    return false;
+  }
+  return candidateId === envOverride;
+}
+
+export function getVerifiedAlternativeFreeModels(
+  failedModel?: string | null,
+  options?: { aiConfigured?: boolean }
+): AlternativeFreeModel[] {
+  const aiConfigured = options?.aiConfigured ?? Boolean(getGeminiApiKey());
+  if (!aiConfigured) {
+    return [];
+  }
+
+  return FREE_MODEL_CATALOG.filter((entry) => {
+    if (failedModel && entry.id === failedModel) {
+      return false;
+    }
+    if (!isAlternativeAllowedByEnv(entry.id)) {
+      return false;
+    }
+    return !isGeminiModelInCooldown(entry.id);
+  });
 }
 
 export function resolveConfiguredFallbackModel(activeModel: string): string | null {
@@ -79,7 +172,7 @@ export function resolveConfiguredFallbackModel(activeModel: string): string | nu
       return null;
     }
     if (envOverride === activeModel) return null;
-    return isFallbackHealthy() ? envOverride : null;
+    return !isGeminiModelInCooldown(envOverride) ? envOverride : null;
   }
 
   if (activeModel !== GEMINI_MODELS.primary) {
@@ -109,8 +202,8 @@ export function getProviderApiKey(provider: AIProviderId): string | null {
   return null;
 }
 
-export function getAvailableAIProviders(): AIProviderInfo[] {
-  const geminiKey = Boolean(getGeminiApiKey());
+export function getAvailableAIProviders(options?: { aiConfigured?: boolean }): AIProviderInfo[] {
+  const geminiKey = options?.aiConfigured ?? Boolean(getGeminiApiKey());
 
   return [
     {
@@ -118,10 +211,24 @@ export function getAvailableAIProviders(): AIProviderInfo[] {
       label: 'Google Gemini (Offre Gratuite 0 €)',
       configured: geminiKey,
       defaultModel: GEMINI_MODELS.primary,
-      models: [
-        { id: GEMINI_MODELS.primary, label: 'Gemini 4 Hydrogen (Gratuit · Principal)' },
-        { id: GEMINI_MODELS.fallback, label: 'Gemini 3.1 Flash Lite (Gratuit · Rapide)' },
-      ],
+      models: FREE_MODEL_CATALOG.map((entry) => {
+        const inCooldown = isGeminiModelInCooldown(entry.id);
+        const health = modelHealthMap.get(entry.id);
+        const available = geminiKey && !inCooldown;
+        const unavailableReason = !geminiKey
+          ? 'Clé API Gemini requise côté serveur'
+          : inCooldown
+            ? health?.category === 'quota_exhausted' || health?.category === 'rate_limit'
+              ? 'Limite gratuite atteinte temporairement (HTTP 429)'
+              : 'Temporairement indisponible'
+            : null;
+        return {
+          id: entry.id,
+          label: entry.label,
+          available,
+          unavailableReason,
+        };
+      }),
       note: geminiKey
         ? 'Actif en mode gratuit 0 € (aucune facturation ni carte bancaire).'
         : 'Clé GEMINI_API_KEY requise dans Settings > Secrets (niveau gratuit Google AI Studio).',
@@ -332,17 +439,45 @@ export function classifyGeminiError(err: unknown): ClassifiedGeminiError {
   return { category: 'unknown', httpStatus, retryAfterMs, rawMessage };
 }
 
-export function mapGeminiErrorMessage(err: unknown): {
+export interface MappedGeminiError {
   status: number;
   code: string;
   message: string;
   retryAfterSec?: number;
-} {
+  failedModel: string | null;
+  alternativeModels: AlternativeFreeModel[];
+  noAlternativeAvailable: boolean;
+}
+
+export function mapGeminiErrorMessage(
+  err: unknown,
+  options?: { failedModel?: string | null; aiConfigured?: boolean }
+): MappedGeminiError {
   const classified = classifyGeminiError(err);
   const retryAfterSec =
     classified.retryAfterMs !== null && classified.retryAfterMs > 0
       ? Math.max(1, Math.ceil(classified.retryAfterMs / 1000))
       : undefined;
+  const failedModel = options?.failedModel ?? null;
+
+  if (classified.category === 'auth') {
+    return {
+      status: 403,
+      code: 'AI_AUTH_ERROR',
+      failedModel,
+      alternativeModels: [],
+      noAlternativeAvailable: true,
+      message:
+        'Clé API IA invalide, expirée ou non autorisée (HTTP 401/403). Aucun paiement ni facturation n’est déclenché : vérifiez la clé dans Settings > Secrets.',
+    };
+  }
+
+  const alternativeModels = getVerifiedAlternativeFreeModels(failedModel, {
+    aiConfigured: options?.aiConfigured,
+  });
+  const noAlternativeAvailable = alternativeModels.length === 0;
+  const firstAlt = alternativeModels[0] ?? null;
+  const failedLabel = failedModel ? getGeminiModelLabel(failedModel) : 'ce modèle IA';
 
   switch (classified.category) {
     case 'timeout':
@@ -350,65 +485,94 @@ export function mapGeminiErrorMessage(err: unknown): {
         status: 504,
         code: 'AI_TIMEOUT',
         retryAfterSec,
-        message:
-          "Le délai d'attente du moteur Gemini a été dépassé (timeout). Votre message a été conservé : cliquez sur Réessayer.",
-      };
-    case 'auth':
-      return {
-        status: 403,
-        code: 'AI_AUTH_ERROR',
-        message:
-          'Clé API IA invalide, expirée ou non autorisée (HTTP 401/403). Vérifiez la clé dans Settings > Secrets.',
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: firstAlt
+          ? `Le délai d'attente du modèle ${failedLabel} a été dépassé (timeout). Votre message a été conservé dans le champ : vous pouvez réessayer ou basculer vers le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}).`
+          : "Le délai d'attente du moteur Gemini a été dépassé (timeout) et aucun modèle alternatif gratuit n'est actuellement disponible. Votre message a été conservé : réessayez dans un instant.",
       };
     case 'quota_exhausted':
       return {
         status: 429,
         code: 'AI_QUOTA_EXHAUSTED',
         retryAfterSec,
-        message: retryAfterSec
-          ? `Limite du service gratuit IA atteinte pour le moment (HTTP 429 — délai : ${retryAfterSec}s). Aucun paiement ni facturation n'est déclenché : patientez avant de réessayer.`
-          : "Limite du service gratuit IA atteinte pour le moment (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucune relance en boucle n'est effectuée : réessayez plus tard ou sélectionnez le modèle léger gemini-3.1-flash-lite.",
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: firstAlt
+          ? retryAfterSec
+            ? `Limite du service gratuit IA atteinte sur ${failedLabel} (HTTP 429 — délai : ${retryAfterSec}s). Aucun paiement ni facturation n'est déclenché : le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}) est vérifié et disponible.`
+            : `Limite du service gratuit IA atteinte sur ${failedLabel} (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucune relance en boucle n'est effectuée : vous pouvez utiliser le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}).`
+          : retryAfterSec
+            ? `Limite du service gratuit IA atteinte pour le moment (HTTP 429 — délai : ${retryAfterSec}s). Aucun paiement ni facturation n'est déclenché et aucun autre modèle gratuit n'est actuellement disponible : le service est temporairement indisponible.`
+            : "Limite du service gratuit IA atteinte pour le moment (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucun autre modèle gratuit n'est actuellement disponible : le service est temporairement indisponible, réessayez plus tard.",
       };
     case 'rate_limit':
       return {
         status: 429,
         code: 'AI_RATE_LIMIT',
         retryAfterSec,
-        message: retryAfterSec
-          ? `Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché : patientez environ ${retryAfterSec} seconde(s) avant de cliquer sur Réessayer.`
-          : "Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché : patientez quelques secondes puis cliquez sur Réessayer.",
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: firstAlt
+          ? retryAfterSec
+            ? `Limite temporaire de débit du service gratuit atteinte sur ${failedLabel} (HTTP 429). Aucun paiement ni facturation n'est déclenché : patientez environ ${retryAfterSec} seconde(s) ou utilisez le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}).`
+            : `Limite temporaire de débit du service gratuit atteinte sur ${failedLabel} (HTTP 429). Aucun paiement ni facturation n'est déclenché : utilisez le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}) ou cliquez sur Réessayer.`
+          : retryAfterSec
+            ? `Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucun autre modèle gratuit n'est disponible pour le moment : patientez environ ${retryAfterSec} seconde(s) avant de cliquer sur Réessayer.`
+            : "Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucun autre modèle gratuit n'est disponible pour le moment : le service est temporairement indisponible, réessayez dans quelques secondes.",
       };
     case 'unavailable':
       return {
         status: 503,
         code: 'AI_BUSY',
         retryAfterSec,
-        message: retryAfterSec
-          ? `Le moteur Gemini est momentanément saturé (HTTP 503). Réessayez dans ${retryAfterSec} seconde(s).`
-          : 'Le moteur Gemini est momentanément saturé ou indisponible (HTTP 503). Réessayez dans un court instant.',
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: firstAlt
+          ? retryAfterSec
+            ? `Le modèle ${failedLabel} est momentanément saturé (HTTP 503). Réessayez dans ${retryAfterSec} seconde(s) ou passez au modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}).`
+            : `Le modèle ${failedLabel} est momentanément saturé ou indisponible (HTTP 503). Vous pouvez passer au modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}) ou réessayer.`
+          : retryAfterSec
+            ? `Le moteur Gemini est momentanément saturé (HTTP 503) et aucun autre modèle gratuit n'est disponible : le service est temporairement indisponible. Réessayez dans ${retryAfterSec} seconde(s).`
+            : "Le moteur Gemini est momentanément saturé ou indisponible (HTTP 503) et aucun modèle alternatif gratuit n'est disponible : le service est temporairement indisponible.",
       };
     case 'model_unavailable':
       return {
         status: 503,
         code: 'AI_MODEL_UNAVAILABLE',
-        message:
-          'Le modèle Gemini demandé est indisponible pour cette configuration API. Sélectionnez un autre modèle disponible.',
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: firstAlt
+          ? `Le modèle ${failedLabel} est indisponible pour cette configuration API. Le modèle alternatif gratuit ${firstAlt.label} (${firstAlt.id}) est disponible.`
+          : "Le modèle Gemini demandé est indisponible et aucun modèle alternatif gratuit n'est actuellement disponible : le service est temporairement indisponible.",
       };
     case 'network':
       return {
         status: 503,
         code: 'AI_NETWORK_ERROR',
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
         message:
           'Erreur réseau temporaire lors de la connexion au moteur Gemini. Votre message a été conservé : cliquez sur Réessayer.',
       };
     default: {
       const safeRaw = classified.rawMessage
         .replace(/AIza[A-Za-z0-9_-]{10,}/g, '[MASQUE]')
-        .replace(/([?&]key=)[^&\s]+/gi, '$1[MASQUE]');
+        .replace(/([?&]key=)[^&\s]+/gi, '$1[MASQUE]')
+        .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [MASQUE]');
       return {
         status: 500,
         code: 'AI_ERROR',
-        message: `Le moteur IA n'a pas pu finaliser la réponse : ${safeRaw}`,
+        failedModel,
+        alternativeModels,
+        noAlternativeAvailable,
+        message: `Le moteur IA n'a pas pu finaliser la réponse (HTTP 500) : ${safeRaw}`,
       };
     }
   }
@@ -810,6 +974,7 @@ export async function runWithResilientGeminiFallback(params: {
         },
       });
 
+      clearGeminiModelCooldown(activeModel);
       return {
         fullText: res.fullText,
         sources: res.sources,
@@ -831,24 +996,25 @@ export async function runWithResilientGeminiFallback(params: {
 
       // Never retry hard quota exhaustion or invalid auth (avoid loops / bypassing limits)
       if (classified.category === 'quota_exhausted' || classified.category === 'auth' || classified.category === 'unknown') {
+        markGeminiModelUnavailable(activeModel, err);
         throw err;
       }
 
       if (totalRetriesUsed >= MAX_TOTAL_RETRIES) {
-        if (activeModel === GEMINI_MODELS.primary && classified.category === 'unavailable') {
-          tripPrimaryCooldown(err);
-        }
+        markGeminiModelUnavailable(activeModel, err);
         throw err;
       }
 
       // If Retry-After exceeds safe short wait threshold, surface clearly without stalling/looping
       if (classified.retryAfterMs !== null && classified.retryAfterMs > maxRetryWaitMs) {
+        markGeminiModelUnavailable(activeModel, err);
         throw err;
       }
 
       // On temporary 429 rate limit: at most 1 bounded retry respecting Retry-After, no fallback loop
       if (classified.category === 'rate_limit') {
         if (rateLimitRetriesUsed >= 1) {
+          markGeminiModelUnavailable(activeModel, err);
           throw err;
         }
         const progressiveMs = retryBaseMs * Math.pow(2, totalRetriesUsed);
@@ -867,11 +1033,9 @@ export async function runWithResilientGeminiFallback(params: {
 
       // On model_unavailable (404): switch directly if configured fallback exists; never retry dead model
       if (classified.category === 'model_unavailable') {
+        markGeminiModelUnavailable(activeModel, err);
         const nextFallback = !fallbackAttempted ? resolveFallback(activeModel) : null;
         if (!nextFallback) {
-          if (activeModel === GEMINI_MODELS.fallback) {
-            tripFallbackCooldown(err);
-          }
           throw err;
         }
         fallbackAttempted = true;
@@ -902,9 +1066,7 @@ export async function runWithResilientGeminiFallback(params: {
 
       const backupModel = !fallbackAttempted ? resolveFallback(activeModel) : null;
       if (backupModel) {
-        if (activeModel === GEMINI_MODELS.primary) {
-          tripPrimaryCooldown(err);
-        }
+        markGeminiModelUnavailable(activeModel, err);
         fallbackAttempted = true;
         sameModelRetries = 0;
         totalRetriesUsed += 1;
@@ -959,6 +1121,7 @@ export async function generateContentWithResilience<T>(params: {
 
     try {
       const response = await params.invokeModel(activeModel, controller.signal);
+      clearGeminiModelCooldown(activeModel);
       return { response, modelUsed: activeModel };
     } catch (err) {
       const normalizedErr =
@@ -974,15 +1137,22 @@ export async function generateContentWithResilience<T>(params: {
         classified.category === 'unknown' ||
         totalRetries >= MAX_TOTAL_RETRIES
       ) {
+        if (classified.category !== 'aborted' && classified.category !== 'auth' && classified.category !== 'unknown') {
+          markGeminiModelUnavailable(activeModel, normalizedErr);
+        }
         throw normalizedErr;
       }
 
       if (classified.retryAfterMs !== null && classified.retryAfterMs > maxRetryWaitMs) {
+        markGeminiModelUnavailable(activeModel, normalizedErr);
         throw normalizedErr;
       }
 
       if (classified.category === 'rate_limit') {
-        if (rateLimitRetries >= 1) throw normalizedErr;
+        if (rateLimitRetries >= 1) {
+          markGeminiModelUnavailable(activeModel, normalizedErr);
+          throw normalizedErr;
+        }
         const waitMs = Math.min(
           maxRetryWaitMs,
           Math.max(retryBaseMs * Math.pow(2, totalRetries), classified.retryAfterMs ?? 0)
@@ -994,9 +1164,9 @@ export async function generateContentWithResilience<T>(params: {
       }
 
       if (classified.category === 'model_unavailable') {
+        markGeminiModelUnavailable(activeModel, normalizedErr);
         const nextFallback = !fallbackAttempted ? resolveFallback(activeModel) : null;
         if (!nextFallback) {
-          if (activeModel === GEMINI_MODELS.fallback) tripFallbackCooldown(normalizedErr);
           throw normalizedErr;
         }
         fallbackAttempted = true;
@@ -1019,7 +1189,7 @@ export async function generateContentWithResilience<T>(params: {
 
       const backupModel = !fallbackAttempted ? resolveFallback(activeModel) : null;
       if (backupModel) {
-        if (activeModel === GEMINI_MODELS.primary) tripPrimaryCooldown(normalizedErr);
+        markGeminiModelUnavailable(activeModel, normalizedErr);
         fallbackAttempted = true;
         sameModelRetries = 0;
         totalRetries += 1;
