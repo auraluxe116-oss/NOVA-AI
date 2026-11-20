@@ -35,41 +35,157 @@ export class ApiError extends Error {
   }
 }
 
-async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(url, {
-    credentials: 'include',
-    cache: 'no-store',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
-    ...init,
-  });
-
-  const text = await res.text();
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-  } catch {
-    parsed = {};
-  }
-
-  if (!res.ok) {
-    const headerRetry = Number(res.headers.get('retry-after') ?? '');
-    const retryAfterSec =
-      typeof parsed.retryAfterSec === 'number'
-        ? parsed.retryAfterSec
-        : Number.isFinite(headerRetry) && headerRetry > 0
-          ? Math.ceil(headerRetry)
-          : null;
-    throw new ApiError(
-      String(parsed.error || `Erreur serveur (${res.status})`),
-      res.status,
-      String(parsed.code || 'HTTP_ERROR'),
-      retryAfterSec
+function normalizeNetworkError(err: unknown): ApiError {
+  if (err instanceof ApiError) return err;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return new ApiError(
+      'Vous semblez hors ligne. Vérifiez votre connexion Internet puis réessayez — votre texte est conservé.',
+      0,
+      'NETWORK_ERROR'
     );
   }
-  return parsed as T;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    err instanceof TypeError ||
+    /failed to fetch|networkerror|load failed|network request failed|err_connection|econnrefused|econnreset/i.test(
+      msg
+    )
+  ) {
+    return new ApiError(
+      'Impossible de joindre le serveur NOVA AI. Vérifiez votre connexion Internet puis réessayez — votre texte est conservé.',
+      0,
+      'NETWORK_ERROR'
+    );
+  }
+  return new ApiError(
+    msg || 'Erreur réseau inattendue lors de la communication avec le serveur.',
+    0,
+    'NETWORK_ERROR'
+  );
+}
+
+function waitMs(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function requestJson<T>(
+  url: string,
+  init: RequestInit = {},
+  options: { timeoutMs?: number } = {}
+): Promise<T> {
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const isIdempotent = method === 'GET' || method === 'HEAD';
+  const maxAttempts = isIdempotent ? 2 : 1;
+  const timeoutMs = options.timeoutMs ?? 22_000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const externalSignal = init.signal;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init.headers || {}),
+        },
+        ...init,
+        signal: controller.signal,
+      });
+
+      const text = await res.text();
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      } catch {
+        parsed = {};
+      }
+
+      if (!res.ok) {
+        const isTransientHttp = res.status === 502 || res.status === 503 || res.status === 504;
+        if (isIdempotent && isTransientHttp && attempt < maxAttempts) {
+          await waitMs(850, externalSignal ?? undefined);
+          continue;
+        }
+        const headerRetry = Number(res.headers.get('retry-after') ?? '');
+        const retryAfterSec =
+          typeof parsed.retryAfterSec === 'number'
+            ? parsed.retryAfterSec
+            : Number.isFinite(headerRetry) && headerRetry > 0
+              ? Math.ceil(headerRetry)
+              : null;
+        const fallbackErr =
+          res.status === 404
+            ? `Route API introuvable (${url} — HTTP 404).`
+            : isTransientHttp
+              ? 'Le serveur NOVA AI est momentanément saturé ou indisponible. Réessayez dans quelques secondes.'
+              : `Erreur serveur (${res.status})`;
+        throw new ApiError(
+          String(parsed.error || fallbackErr),
+          res.status,
+          String(parsed.code || (res.status === 404 ? 'API_NOT_FOUND' : 'HTTP_ERROR')),
+          retryAfterSec
+        );
+      }
+
+      return parsed as T;
+    } catch (err) {
+      if (externalSignal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      if (timedOut) {
+        if (isIdempotent && attempt < maxAttempts) {
+          await waitMs(850, externalSignal ?? undefined);
+          continue;
+        }
+        throw new ApiError(
+          'Le serveur met trop de temps à répondre (délai dépassé). Veuillez réessayer.',
+          504,
+          'CLIENT_TIMEOUT'
+        );
+      }
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (isIdempotent && attempt < maxAttempts) {
+        await waitMs(850, externalSignal ?? undefined);
+        continue;
+      }
+      throw normalizeNetworkError(err);
+    } finally {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  throw new ApiError('Impossible de joindre le serveur.', 0, 'NETWORK_ERROR');
 }
 
 export async function fetchAuthMe(): Promise<{
@@ -151,17 +267,38 @@ export async function fetchDashboard(): Promise<DashboardData> {
   return requestJson('/api/dashboard');
 }
 
-export async function fetchConversations(): Promise<{
+export async function fetchConversations(options?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{
   conversations: ConversationSummary[];
+  hasMore: boolean;
+  total: number;
 }> {
-  return requestJson('/api/conversations');
+  const params = new URLSearchParams();
+  if (options?.limit !== undefined) params.set('limit', String(options.limit));
+  if (options?.offset !== undefined) params.set('offset', String(options.offset));
+  const qs = params.toString();
+  return requestJson(`/api/conversations${qs ? `?${qs}` : ''}`);
 }
 
-export async function fetchConversationDetail(id: string): Promise<{
+export async function fetchConversationDetail(
+  id: string,
+  options?: { limit?: number; beforeSeq?: number | null }
+): Promise<{
   conversation: ConversationSummary;
   messages: ChatMessage[];
+  hasMoreOlder: boolean;
+  nextBeforeSeq: number | null;
+  totalMessages: number;
 }> {
-  return requestJson(`/api/conversations/${encodeURIComponent(id)}`);
+  const params = new URLSearchParams();
+  if (options?.limit !== undefined) params.set('limit', String(options.limit));
+  if (options?.beforeSeq !== undefined && options?.beforeSeq !== null) {
+    params.set('beforeSeq', String(options.beforeSeq));
+  }
+  const qs = params.toString();
+  return requestJson(`/api/conversations/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`);
 }
 
 export async function renameConversationApi(
@@ -208,10 +345,14 @@ export async function generateCompanySuiteApi(payload: {
   modelUsed: string;
   quota: QuotaSnapshot;
 }> {
-  return requestJson('/api/business/company-suite', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/business/company-suite',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 65_000 }
+  );
 }
 
 export async function regenerateLogoApi(payload: {
@@ -222,10 +363,14 @@ export async function regenerateLogoApi(payload: {
   styleHint?: string;
   creationId?: string | null;
 }): Promise<{ logoSvg: string; modelUsed: string }> {
-  return requestJson('/api/business/generate-logo', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/business/generate-logo',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 45_000 }
+  );
 }
 
 export async function regenerateWebsiteApi(payload: {
@@ -240,10 +385,14 @@ export async function regenerateWebsiteApi(payload: {
   customInstructions?: string;
   creationId?: string | null;
 }): Promise<{ websiteHtml: string; modelUsed: string }> {
-  return requestJson('/api/business/generate-website', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/business/generate-website',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 65_000 }
+  );
 }
 
 export async function fetchCompanyCreations(): Promise<{
@@ -293,10 +442,14 @@ export async function generateContentMarketingApi(payload: {
   tone?: string;
   callToAction?: string;
 }): Promise<{ content: string; modelUsed: string }> {
-  return requestJson('/api/content/generate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/content/generate',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 55_000 }
+  );
 }
 
 export async function generateVideoStoryboardApi(payload: {
@@ -306,10 +459,14 @@ export async function generateVideoStoryboardApi(payload: {
   durationTargetSec?: number;
   sourceScript?: string;
 }): Promise<{ storyboard: VideoStoryboard; modelUsed: string }> {
-  return requestJson('/api/video/storyboard', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/video/storyboard',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 55_000 }
+  );
 }
 
 export async function fetchDocuments(): Promise<{
@@ -329,10 +486,14 @@ export async function generateDocumentApi(payload: {
   modelUsed: string;
   document: UserDocument | null;
 }> {
-  return requestJson('/api/documents/generate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return requestJson(
+    '/api/documents/generate',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 55_000 }
+  );
 }
 
 export async function saveDocumentApi(payload: {
@@ -364,8 +525,20 @@ async function consumeSseStream(
     onDone: (payload: Record<string, unknown>) => void;
   }
 ): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new ApiError(
+      'Vous semblez hors ligne. Vérifiez votre connexion Internet puis réessayez — votre message est conservé.',
+      0,
+      'NETWORK_ERROR'
+    );
+  }
+
   const internalController = new AbortController();
   let timedOut = false;
+  let watchdog = setTimeout(() => {
+    timedOut = true;
+    internalController.abort();
+  }, 55_000);
   const resetWatchdog = () => {
     clearTimeout(watchdog);
     watchdog = setTimeout(() => {
@@ -373,35 +546,68 @@ async function consumeSseStream(
       internalController.abort();
     }, 55_000);
   };
-  let watchdog = setTimeout(() => {
-    timedOut = true;
-    internalController.abort();
-  }, 55_000);
 
   const onExternalAbort = () => internalController.abort();
   signal.addEventListener('abort', onExternalAbort, { once: true });
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: internalController.signal,
-    });
-  } catch (err) {
+  // Bounded pre-stream retry (max 1 automatic retry ONLY if handshake fails before any SSE stream starts)
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const candidate = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: internalController.signal,
+      });
+
+      const isTransientGateway =
+        candidate.status === 502 || candidate.status === 503 || candidate.status === 504;
+      if (!candidate.ok && isTransientGateway && attempt < 2 && !signal.aborted) {
+        handlers.onStatus?.('Serveur momentanément occupé, nouvelle tentative automatique...');
+        await waitMs(900, signal);
+        resetWatchdog();
+        continue;
+      }
+      res = candidate;
+      break;
+    } catch (err) {
+      if (signal.aborted) {
+        clearTimeout(watchdog);
+        signal.removeEventListener('abort', onExternalAbort);
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      if (timedOut) {
+        clearTimeout(watchdog);
+        signal.removeEventListener('abort', onExternalAbort);
+        throw new ApiError(
+          'Le serveur met trop de temps à répondre (délai dépassé). Clique sur Réessayer — ton texte est conservé.',
+          504,
+          'CLIENT_TIMEOUT'
+        );
+      }
+      if (attempt < 2) {
+        handlers.onStatus?.('Connexion instable, reconnexion automatique...');
+        await waitMs(900, signal);
+        resetWatchdog();
+        continue;
+      }
+      clearTimeout(watchdog);
+      signal.removeEventListener('abort', onExternalAbort);
+      throw normalizeNetworkError(err);
+    }
+  }
+
+  if (!res) {
     clearTimeout(watchdog);
     signal.removeEventListener('abort', onExternalAbort);
-    if (timedOut) {
-      throw new ApiError(
-        'Le serveur met trop de temps à répondre (délai dépassé). Clique sur Réessayer.',
-        504,
-        'CLIENT_TIMEOUT'
-      );
-    }
-    throw err;
+    throw new ApiError(
+      'Impossible de joindre le serveur NOVA AI. Réessaye dans quelques instants.',
+      0,
+      'NETWORK_ERROR'
+    );
   }
 
   if (!res.ok) {
@@ -417,7 +623,9 @@ async function consumeSseStream(
     const fallbackMessage =
       res.status === 404
         ? `Route API introuvable (${url} — HTTP 404). Vérifiez le déploiement des fonctions serverless /api.`
-        : `Erreur serveur (${res.status})`;
+        : res.status === 502 || res.status === 503 || res.status === 504
+          ? 'Le serveur NOVA AI est temporairement indisponible. Réessayez dans quelques secondes.'
+          : `Erreur serveur (${res.status})`;
     const headerRetry = Number(res.headers.get('retry-after') ?? '');
     const retryAfterSec =
       typeof errObj.retryAfterSec === 'number'
@@ -532,7 +740,7 @@ async function consumeSseStream(
     if (signal.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
-    throw err;
+    throw err instanceof ApiError ? err : normalizeNetworkError(err);
   } finally {
     clearTimeout(watchdog);
     signal.removeEventListener('abort', onExternalAbort);

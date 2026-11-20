@@ -4,6 +4,7 @@ import { after, before, test } from 'node:test';
 
 const { createApp } = await import('./app.js');
 const {
+  addMessage,
   checkDatabaseHealth,
   closeDatabase,
   createConversation,
@@ -406,22 +407,42 @@ test('budget strict 0 € : aucun service payant, rejet fournisseurs tiers payan
   assert.equal(htmlTooBig.status, 413);
   assert.equal(((await htmlTooBig.json()) as { code: string }).code, 'HTML_TOO_LARGE');
 
-  // 5. Quota journalier visiteur anonyme (25 messages/jour) -> HTTP 429 FREE_QUOTA_REACHED sans facturation
+  // 5. Aucun blocage artificiel à 25 messages/jour : le 26e message passe en HTTP 200 (sans facturation)
   const guestIp = '203.0.113.99';
   const guestIpHash = hashIp(guestIp);
   for (let i = 0; i < 25; i += 1) {
     await recordUsage({ userId: null, ipHash: guestIpHash, kind: 'chat' });
   }
 
-  const overCap = await fetch(`${baseUrl}/api/chat`, {
+  const msg26Res = await fetch(`${baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': guestIp },
     body: JSON.stringify({ message: 'Msg invité 26' }),
   });
-  assert.equal(overCap.status, 429);
-  const overBody = (await overCap.json()) as { code: string; error: string };
-  assert.equal(overBody.code, 'FREE_QUOTA_REACHED');
-  assert.match(overBody.error, /aucun paiement ni facturation/i);
+  assert.equal(msg26Res.status, 200);
+  const msg26Body = await msg26Res.text();
+  assert.match(msg26Body, /"dailyChatLimit":null/);
+  assert.match(msg26Body, /"providerQuotaManaged":true/);
+
+  // 6. Protection anti-rafale (anti-abus > 30 req/min) retourne HTTP 429 BURST_LIMIT sans facturation
+  const burstIp = '203.0.113.150';
+  let burstHit = false;
+  for (let i = 1; i <= 32; i += 1) {
+    const r = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': burstIp },
+      body: JSON.stringify({ message: `Burst msg ${i}` }),
+    });
+    if (r.status === 429) {
+      const b = (await r.json()) as { code: string; retryAfterSec: number };
+      assert.equal(b.code, 'BURST_LIMIT');
+      assert.ok(b.retryAfterSec >= 1);
+      burstHit = true;
+      break;
+    }
+    await r.text();
+  }
+  assert.equal(burstHit, true, 'La protection anti-rafale doit s’activer au-delà du seuil par minute');
 });
 
 test('sécurité API : en-têtes HTTP, CSRF Origin, mots de passe blancs refusés et sandbox CSP sur /sites/:slug', async () => {
@@ -463,7 +484,21 @@ test('sécurité API : en-têtes HTTP, CSRF Origin, mots de passe blancs refusé
     ['gemini']
   );
 
-  // 3. Protection CSRF Origin sur requêtes mutantes avec origine étrangère
+  // 3. Protection CSRF Origin & CORS OPTIONS preflight
+  const hostOrigin = new URL(baseUrl).origin;
+  const preflightOk = await fetch(`${baseUrl}/api/chat`, {
+    method: 'OPTIONS',
+    headers: { Origin: hostOrigin },
+  });
+  assert.equal(preflightOk.status, 204);
+  assert.equal(preflightOk.headers.get('access-control-allow-origin'), hostOrigin);
+
+  const preflightEvil = await fetch(`${baseUrl}/api/chat`, {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://evil-attacker.example' },
+  });
+  assert.equal(preflightEvil.status, 403);
+
   const csrfBlocked = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: {
@@ -620,6 +655,80 @@ test('PostgreSQL : /api/health, masquage DATABASE_URL, création/lecture utilisa
       });
     }
   }
+});
+
+test('conversations longues : pagination historique conversations & messages antérieurs par seq', async () => {
+  const reg = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'pagination-user@nova-test.local',
+      password: 'PasswordPaginate123!',
+      displayName: 'Paginate User',
+    }),
+  });
+  assert.equal(reg.status, 201);
+  const regJson = (await reg.json()) as { user: { id: string } };
+  const cookie = (reg.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
+  // Seed 3 conversations and test /api/conversations?limit=2&offset=0 / offset=2
+  const conv1 = await createConversation({ userId: regJson.user.id, title: 'Conv 1', category: 'general' });
+  await createConversation({ userId: regJson.user.id, title: 'Conv 2', category: 'general' });
+  await createConversation({ userId: regJson.user.id, title: 'Conv 3', category: 'general' });
+
+  const page1 = await (
+    await fetch(`${baseUrl}/api/conversations?limit=2&offset=0`, { headers: { Cookie: cookie } })
+  ).json() as { conversations: Array<{ id: string }>; hasMore: boolean; total: number };
+  assert.equal(page1.conversations.length, 2);
+  assert.equal(page1.hasMore, true);
+  assert.equal(page1.total, 3);
+
+  const page2 = await (
+    await fetch(`${baseUrl}/api/conversations?limit=2&offset=2`, { headers: { Cookie: cookie } })
+  ).json() as { conversations: Array<{ id: string }>; hasMore: boolean; total: number };
+  assert.equal(page2.conversations.length, 1);
+  assert.equal(page2.hasMore, false);
+
+  // Seed 28 messages into conv1 (> 25 messages) and paginate backward via beforeSeq
+  for (let i = 1; i <= 28; i += 1) {
+    await addMessage({
+      conversationId: conv1.id,
+      role: i % 2 === 1 ? 'user' : 'assistant',
+      content: `Message historique #${i}`,
+    });
+  }
+
+  const latestRes = await fetch(`${baseUrl}/api/conversations/${conv1.id}?limit=10`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(latestRes.status, 200);
+  const latest = (await latestRes.json()) as {
+    messages: Array<{ content: string; seq?: number }>;
+    hasMoreOlder: boolean;
+    nextBeforeSeq: number | null;
+    totalMessages: number;
+  };
+  assert.equal(latest.totalMessages, 28);
+  assert.equal(latest.messages.length, 10);
+  assert.equal(latest.hasMoreOlder, true);
+  assert.ok(latest.nextBeforeSeq && latest.nextBeforeSeq > 1);
+  assert.equal(latest.messages[0]?.content, 'Message historique #19');
+  assert.equal(latest.messages[9]?.content, 'Message historique #28');
+
+  const olderRes = await fetch(
+    `${baseUrl}/api/conversations/${conv1.id}?limit=10&beforeSeq=${latest.nextBeforeSeq}`,
+    { headers: { Cookie: cookie } }
+  );
+  assert.equal(olderRes.status, 200);
+  const older = (await olderRes.json()) as {
+    messages: Array<{ content: string }>;
+    hasMoreOlder: boolean;
+    nextBeforeSeq: number | null;
+  };
+  assert.equal(older.messages.length, 10);
+  assert.equal(older.hasMoreOlder, true);
+  assert.equal(older.messages[0]?.content, 'Message historique #9');
+  assert.equal(older.messages[9]?.content, 'Message historique #18');
 });
 
 test('Neon PostgreSQL réel (si DATABASE_URL configurée) : connexion live, migrations, CRUD utilisateur et persistance', async (t) => {

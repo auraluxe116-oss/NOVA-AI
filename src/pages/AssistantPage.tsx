@@ -1,6 +1,8 @@
 import {
   AlertCircle,
+  ArrowDown,
   Check,
+  ChevronUp,
   Copy,
   Cpu,
   Edit3,
@@ -17,7 +19,15 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import type {
   AIProviderId,
@@ -88,9 +98,25 @@ export function AssistantPage({
   onNavigate,
 }: AssistantPageProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [convHasMore, setConvHasMore] = useState(false);
+  const [convTotal, setConvTotal] = useState(0);
+  const [loadingMoreConvs, setLoadingMoreConvs] = useState(false);
   const [activeConvId, setActiveConvId] = useState<string | null>(initialConversationId ?? null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
+  const [totalMessages, setTotalMessages] = useState(0);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
+  const draftStorageKey = `nova_draft_input_${user?.id ?? 'guest'}`;
+  const [input, setInput] = useState(() => {
+    try {
+      return typeof window !== 'undefined' ? window.sessionStorage.getItem(draftStorageKey) || '' : '';
+    } catch {
+      return '';
+    }
+  });
   const [useWebSearch, setUseWebSearch] = useState(Boolean(user?.preferences?.autoWebSearch));
   const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel>(
     user?.preferences?.defaultExperience || 'debutant'
@@ -124,6 +150,9 @@ export function AssistantPage({
   const inFlightRef = useRef(false);
   const activeRequestSeqRef = useRef(0);
   const convLoadSeqRef = useRef(0);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const isNearBottomRef = useRef(true);
+  const pendingScrollRestoreRef = useRef<{ height: number; top: number } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -154,16 +183,47 @@ export function AssistantPage({
     return () => clearInterval(timer);
   }, [retryCountdownSec]);
 
-  const loadConversationsList = async () => {
+  useEffect(() => {
+    try {
+      if (input.trim()) {
+        window.sessionStorage.setItem(draftStorageKey, input);
+      } else {
+        window.sessionStorage.removeItem(draftStorageKey);
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [input, draftStorageKey]);
+
+  const loadConversationsList = async (append = false) => {
     if (!user) {
       setConversations([]);
+      setConvHasMore(false);
+      setConvTotal(0);
       return;
     }
+    if (append) {
+      setLoadingMoreConvs(true);
+    }
     try {
-      const data = await fetchConversations();
-      setConversations(data.conversations);
+      const offset = append ? conversations.length : 0;
+      const data = await fetchConversations({ limit: 35, offset });
+      if (append) {
+        setConversations((prev) => {
+          const existing = new Set(prev.map((c) => c.id));
+          return [...prev, ...data.conversations.filter((c) => !existing.has(c.id))];
+        });
+      } else {
+        setConversations(data.conversations);
+      }
+      setConvHasMore(Boolean(data.hasMore));
+      setConvTotal(data.total ?? data.conversations.length);
     } catch {
       // ignore non-blocking list failure
+    } finally {
+      if (append) {
+        setLoadingMoreConvs(false);
+      }
     }
   };
 
@@ -189,7 +249,7 @@ export function AssistantPage({
   }, [user?.id, user?.preferences?.preferredProvider, user?.preferences?.preferredModel]);
 
   useEffect(() => {
-    void loadConversationsList();
+    void loadConversationsList(false);
     if (user?.preferences?.defaultExperience) {
       setExperienceLevel(user.preferences.defaultExperience);
     }
@@ -201,9 +261,27 @@ export function AssistantPage({
     }
   }, [initialConversationId, user?.id]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, statusLabel]);
+  const handleMessagesScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom < 120;
+    isNearBottomRef.current = nearBottom;
+    setShowScrollBottom(!nearBottom && messages.length > 0);
+  };
+
+  useLayoutEffect(() => {
+    const restore = pendingScrollRestoreRef.current;
+    const el = scrollContainerRef.current;
+    if (restore && el) {
+      pendingScrollRestoreRef.current = null;
+      el.scrollTop = el.scrollHeight - restore.height + restore.top;
+      return;
+    }
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [messages, statusLabel]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -220,11 +298,18 @@ export function AssistantPage({
     setLastFailedRequest(null);
     setRetryCountdownSec(0);
     setMobileHistoryOpen(false);
+    setHasMoreOlder(false);
+    setNextBeforeSeq(null);
+    setTotalMessages(0);
+    isNearBottomRef.current = true;
     try {
-      const detail = await fetchConversationDetail(id);
+      const detail = await fetchConversationDetail(id, { limit: 60 });
       if (loadSeq !== convLoadSeqRef.current) return;
       setActiveConvId(id);
       setMessages(detail.messages);
+      setHasMoreOlder(Boolean(detail.hasMoreOlder));
+      setNextBeforeSeq(detail.nextBeforeSeq ?? null);
+      setTotalMessages(detail.totalMessages ?? detail.messages.length);
       setSummarizedActive(Boolean(detail.conversation.context_summary));
     } catch (err) {
       if (loadSeq !== convLoadSeqRef.current) return;
@@ -236,17 +321,57 @@ export function AssistantPage({
     }
   };
 
+  const handleLoadOlderMessages = async () => {
+    if (!activeConvId || !hasMoreOlder || !nextBeforeSeq || loadingOlderMessages) return;
+    const targetConvId = activeConvId;
+    const loadSeq = convLoadSeqRef.current;
+    const el = scrollContainerRef.current;
+    setLoadingOlderMessages(true);
+    try {
+      const detail = await fetchConversationDetail(targetConvId, {
+        limit: 60,
+        beforeSeq: nextBeforeSeq,
+      });
+      if (loadSeq !== convLoadSeqRef.current) return;
+      if (el) {
+        pendingScrollRestoreRef.current = {
+          height: el.scrollHeight,
+          top: el.scrollTop,
+        };
+      }
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((m) => m.id));
+        const older = detail.messages.filter((m) => !existingIds.has(m.id));
+        return [...older, ...prev];
+      });
+      setHasMoreOlder(Boolean(detail.hasMoreOlder));
+      setNextBeforeSeq(detail.nextBeforeSeq ?? null);
+      if (detail.totalMessages) setTotalMessages(detail.totalMessages);
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : 'Impossible de charger les messages précédents.'
+      );
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  };
+
   const handleNewChat = () => {
     cancelActiveStream();
     convLoadSeqRef.current += 1;
     setLoadingConv(false);
     setActiveConvId(null);
     setMessages([]);
+    setHasMoreOlder(false);
+    setNextBeforeSeq(null);
+    setTotalMessages(0);
     setSummarizedActive(false);
     setErrorBanner(null);
     setLastFailedRequest(null);
     setRetryCountdownSec(0);
     setMobileHistoryOpen(false);
+    setShowScrollBottom(false);
+    isNearBottomRef.current = true;
   };
 
   const handleRenameConv = async (id: string) => {
@@ -313,12 +438,28 @@ export function AssistantPage({
     const cleanPrompt = promptText.trim();
     if (!cleanPrompt || isGenerating || inFlightRef.current) return;
 
+    const currentAttachment =
+      options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
+
+    // Pre-flight offline check: preserve user's drafted text in composer and show clear banner
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setErrorBanner(
+        'Vous semblez hors ligne. Vérifiez votre connexion Internet puis réessayez — votre message est conservé.'
+      );
+      setLastFailedRequest({
+        prompt: cleanPrompt,
+        attachment: currentAttachment,
+        errorCode: 'NETWORK_ERROR',
+        retryAfterSec: null,
+      });
+      return;
+    }
+
     inFlightRef.current = true;
+    isNearBottomRef.current = true;
     const requestSeq = ++activeRequestSeqRef.current;
     const targetConvId = activeConvId;
     const isRetry = Boolean(options?.isRetry);
-    const currentAttachment =
-      options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
 
     setErrorBanner(null);
     setLastFailedRequest(null);
@@ -692,20 +833,40 @@ export function AssistantPage({
             );
           })
         )}
+
+        {user && convHasMore && (
+          <div className="pt-2">
+            <button
+              type="button"
+              disabled={loadingMoreConvs}
+              onClick={() => void loadConversationsList(true)}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#232332] bg-[#111117] px-3 py-2 text-xs font-medium text-[#C4B5FD] hover:border-[#7C3AED] hover:text-white disabled:opacity-50"
+            >
+              {loadingMoreConvs ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Chargement...
+                </>
+              ) : (
+                `Charger plus (${conversations.length}/${convTotal})`
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Quotas gratuits 0 € */}
+      {/* Mode Gratuit 0 € sans plafond applicatif */}
       {quota && (
         <div className="border-t border-[#1F1F2D] p-3.5 text-xs space-y-1.5">
           <div className="flex items-center justify-between text-[#B2B2C6]">
-            <span>Mode Gratuit · 0 €</span>
+            <span>Service Gratuit · 0 €</span>
             <span className="font-mono tabular-nums text-white">
-              {quota.chatUsedToday} / {quota.dailyChatLimit} msg/j
+              {quota.chatUsedToday} msg aujourd&apos;hui
             </span>
           </div>
           <p className="text-[11px] leading-snug text-[#8D8DA4]">
-            Budget strict 0 € : si le quota journalier est atteint, aucun paiement n&apos;est
-            déclenché et le compteur redémarre demain.
+            Discussions continues sans plafond applicatif ni facturation, dans les limites des
+            quotas gratuits Google Gemini.
           </p>
         </div>
       )}
@@ -846,8 +1007,32 @@ export function AssistantPage({
         </div>
 
         {/* Messages Scroll Area */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleMessagesScroll}
+          className="relative flex-1 overflow-y-auto px-4 py-6 sm:px-6"
+        >
           <div className="mx-auto max-w-3xl space-y-6">
+            {hasMoreOlder && activeConvId && !loadingConv && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  disabled={loadingOlderMessages}
+                  onClick={() => void handleLoadOlderMessages()}
+                  className="inline-flex items-center gap-2 rounded-lg border border-[#2B2B3F] bg-[#111117] px-3.5 py-2 text-xs font-medium text-[#C4B5FD] hover:border-[#7C3AED] hover:text-white disabled:opacity-50"
+                >
+                  {loadingOlderMessages ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  )}
+                  {loadingOlderMessages
+                    ? 'Chargement des messages précédents...'
+                    : `Charger les messages précédents (${messages.length}/${totalMessages})`}
+                </button>
+              </div>
+            )}
+
             {loadingConv ? (
               <div className="flex items-center justify-center gap-2 py-12 text-sm text-[#8F8FA6]">
                 <Loader2 className="h-4 w-4 animate-spin text-[#8B5CF6]" />
@@ -952,24 +1137,22 @@ export function AssistantPage({
                                           Passer à Flash Lite (gratuit)
                                         </button>
                                       )}
-                                    {lastFailedRequest.errorCode !== 'FREE_QUOTA_REACHED' && (
-                                      <button
-                                        type="button"
-                                        disabled={isGenerating || retryCountdownSec > 0}
-                                        onClick={() =>
-                                          void sendMessage(lastFailedRequest.prompt, {
-                                            isRetry: true,
-                                            overrideAttachment: lastFailedRequest.attachment,
-                                          })
-                                        }
-                                        className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
-                                      >
-                                        <RotateCcw className="h-3.5 w-3.5" />
-                                        {retryCountdownSec > 0
-                                          ? `Réessayer (${retryCountdownSec}s)`
-                                          : 'Réessayer'}
-                                      </button>
-                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={isGenerating || retryCountdownSec > 0}
+                                      onClick={() =>
+                                        void sendMessage(lastFailedRequest.prompt, {
+                                          isRetry: true,
+                                          overrideAttachment: lastFailedRequest.attachment,
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
+                                    >
+                                      <RotateCcw className="h-3.5 w-3.5" />
+                                      {retryCountdownSec > 0
+                                        ? `Réessayer (${retryCountdownSec}s)`
+                                        : 'Réessayer'}
+                                    </button>
                                     <button
                                       type="button"
                                       disabled={isGenerating}
@@ -1022,6 +1205,23 @@ export function AssistantPage({
             )}
             <div ref={bottomRef} />
           </div>
+
+          {showScrollBottom && (
+            <div className="sticky bottom-2 flex justify-center pointer-events-none">
+              <button
+                type="button"
+                onClick={() => {
+                  isNearBottomRef.current = true;
+                  setShowScrollBottom(false);
+                  bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-[#3B2B68] bg-[#161224]/95 px-3.5 py-1.5 text-xs font-medium text-[#DDD6FE] shadow-lg hover:border-[#7C3AED] hover:text-white"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+                Aller en bas
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Composer */}
@@ -1048,21 +1248,19 @@ export function AssistantPage({
                             Passer à Flash Lite (gratuit)
                           </button>
                         )}
-                      {lastFailedRequest.errorCode !== 'FREE_QUOTA_REACHED' && (
-                        <button
-                          type="button"
-                          disabled={isGenerating || retryCountdownSec > 0}
-                          onClick={() =>
-                            void sendMessage(lastFailedRequest.prompt, {
-                              isRetry: true,
-                              overrideAttachment: lastFailedRequest.attachment,
-                            })
-                          }
-                          className="rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
-                        >
-                          {retryCountdownSec > 0 ? `Réessayer (${retryCountdownSec}s)` : 'Réessayer'}
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        disabled={isGenerating || retryCountdownSec > 0}
+                        onClick={() =>
+                          void sendMessage(lastFailedRequest.prompt, {
+                            isRetry: true,
+                            overrideAttachment: lastFailedRequest.attachment,
+                          })
+                        }
+                        className="rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                      >
+                        {retryCountdownSec > 0 ? `Réessayer (${retryCountdownSec}s)` : 'Réessayer'}
+                      </button>
                       <button
                         type="button"
                         disabled={isGenerating}

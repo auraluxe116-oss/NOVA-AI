@@ -48,13 +48,14 @@ export interface PublicUser {
 export interface QuotaSnapshot {
   plan: PlanTier;
   zeroCostMode: true;
+  providerQuotaManaged?: boolean;
   isAuthenticated: boolean;
   chatUsedToday: number;
   businessUsedToday: number;
-  dailyChatLimit: number;
-  dailyBusinessLimit: number;
-  dailyChatRemaining: number;
-  dailyBusinessRemaining: number;
+  dailyChatLimit: number | null;
+  dailyBusinessLimit: number | null;
+  dailyChatRemaining: number | null;
+  dailyBusinessRemaining: number | null;
   maxAttachmentBytes: number;
   maxPublishedSites: number;
   exportEnabled: boolean;
@@ -69,6 +70,7 @@ export interface SourceLink {
 
 export interface ChatMessage {
   id: string;
+  seq?: number;
   role: 'user' | 'assistant';
   content: string;
   sources?: SourceLink[];

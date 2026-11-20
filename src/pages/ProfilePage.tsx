@@ -513,13 +513,19 @@ export function ProfilePage({
                   <div className="flex items-center justify-between">
                     <span className="text-[#9E9EB5]">Messages Assistant IA aujourd&apos;hui</span>
                     <span className="font-mono tabular-nums text-white">
-                      {quota.chatUsedToday} / {quota.dailyChatLimit}
+                      {quota.chatUsedToday}
+                      {quota.dailyChatLimit !== null
+                        ? ` / ${quota.dailyChatLimit}`
+                        : ' (sans plafond app)'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-[#9E9EB5]">Générations Studio Business aujourd&apos;hui</span>
                     <span className="font-mono tabular-nums text-white">
-                      {quota.businessUsedToday} / {quota.dailyBusinessLimit}
+                      {quota.businessUsedToday}
+                      {quota.dailyBusinessLimit !== null
+                        ? ` / ${quota.dailyBusinessLimit}`
+                        : ' (sans plafond app)'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
@@ -545,9 +551,9 @@ export function ProfilePage({
             </div>
 
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs leading-relaxed text-emerald-100">
-              Si vous atteignez la limite journalière gratuite ou la limite de débit du modèle
-              gratuit Gemini, aucun paiement ni facturation n&apos;est déclenché : le compteur se
-              réinitialise automatiquement le lendemain.
+              NOVA AI n&apos;impose aucun blocage commercial de messages. Seules les limites
+              techniques gratuites du fournisseur Google Gemini (et une protection anti-rafale)
+              s&apos;appliquent, sans jamais déclencher de paiement.
             </div>
 
             <button
@@ -555,7 +561,7 @@ export function ProfilePage({
               onClick={() => onNavigate('tarifs')}
               className="w-full rounded-lg border border-[#2C2C40] bg-[#171722] py-2.5 text-sm font-semibold text-white hover:border-[#7C3AED] transition-colors"
             >
-              Consulter le détail des limites gratuites (0 €)
+              Consulter le fonctionnement gratuit (0 €)
             </button>
           </div>
         </div>

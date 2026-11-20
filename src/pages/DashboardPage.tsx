@@ -161,14 +161,15 @@ export function DashboardPage({
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
               <p className="text-xs text-[#9E9EB5]">Messages Assistant IA (jour)</p>
               <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
-                {data.quota.chatUsedToday} / {data.quota.dailyChatLimit}
+                {data.quota.chatUsedToday}
+                {data.quota.dailyChatLimit !== null ? ` / ${data.quota.dailyChatLimit}` : ''}
               </p>
               <p className="mt-1 text-xs text-[#8D8DA4]">
                 Total cumulé :{' '}
                 <span className="font-mono tabular-nums text-[#D4D4E6]">
                   {data.stats.totalMessages}
                 </span>{' '}
-                · {data.quota.dailyChatRemaining} restants aujourd&apos;hui
+                · Sans plafond applicatif
               </p>
             </div>
 
@@ -191,10 +192,11 @@ export function DashboardPage({
             </div>
 
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
-              <p className="text-xs text-[#9E9EB5]">Quotas Studio &amp; Sites (0 €)</p>
+              <p className="text-xs text-[#9E9EB5]">Studio &amp; Sites gratuits (0 €)</p>
               <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
-                {data.quota.businessUsedToday}/{data.quota.dailyBusinessLimit}{' '}
-                <span className="text-xs font-normal text-[#8D8DA4]">studio/j</span>
+                {data.quota.businessUsedToday}
+                {data.quota.dailyBusinessLimit !== null ? `/${data.quota.dailyBusinessLimit}` : ''}{' '}
+                <span className="text-xs font-normal text-[#8D8DA4]">générations/j</span>
               </p>
               <p className="mt-1 text-xs text-[#8D8DA4]">
                 Sites publiés : {data.stats.totalPublishedSites}/{data.quota.maxPublishedSites} · PJ max{' '}

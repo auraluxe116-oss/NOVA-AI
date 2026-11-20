@@ -16,6 +16,7 @@ import {
 import {
   addMessage,
   checkDatabaseHealth,
+  countConversationMessages,
   countUserPublishedSites,
   createBusinessProject,
   createCompanyCreation,
@@ -40,7 +41,9 @@ import {
   listBusinessProjects,
   listCompanyCreations,
   listConversationMessages,
+  listConversationMessagesPage,
   listUserConversations,
+  listUserConversationsPage,
   listUserDocuments,
   listUserPublishedSites,
   publishSite,
@@ -70,6 +73,7 @@ import {
   summarizeConversationHistory,
 } from './gemini.js';
 import {
+  FREE_TIER_LIMITS,
   PLAN_SPECS,
   resolveEffectivePlan,
   type ExperienceLevel,
@@ -108,50 +112,22 @@ async function buildQuotaSnapshot(user: PublicUser | null, ipHash: string) {
     }),
   ]);
 
-  const dailyChatLimit = isAuthenticated ? spec.dailyChatLimitUser : spec.dailyChatLimitGuest;
-  const dailyBusinessLimit = isAuthenticated
-    ? spec.dailyBusinessLimitUser
-    : spec.dailyBusinessLimitGuest;
-
   return {
     plan,
     zeroCostMode: true as const,
+    providerQuotaManaged: true as const,
     isAuthenticated,
     chatUsedToday,
     businessUsedToday,
-    dailyChatLimit,
-    dailyBusinessLimit,
-    dailyChatRemaining: Math.max(0, dailyChatLimit - chatUsedToday),
-    dailyBusinessRemaining: Math.max(0, dailyBusinessLimit - businessUsedToday),
+    dailyChatLimit: null,
+    dailyBusinessLimit: null,
+    dailyChatRemaining: null,
+    dailyBusinessRemaining: null,
     maxAttachmentBytes: spec.maxAttachmentBytes,
     maxPublishedSites: spec.maxPublishedSites,
     exportEnabled: spec.exportEnabled,
     fullBusinessSuite: spec.fullBusinessSuite,
     companyCreationSuite: spec.companyCreationSuite,
-  };
-}
-
-type QuotaSnapshotData = Awaited<ReturnType<typeof buildQuotaSnapshot>>;
-
-function buildFreeQuotaExceededPayload(
-  kind: 'chat' | 'business',
-  quota: QuotaSnapshotData
-): { code: string; error: string } {
-  if (kind === 'chat') {
-    const guestHint = quota.isAuthenticated
-      ? 'Le compteur gratuit se réinitialise automatiquement demain.'
-      : `Crée un compte gratuit (0 €, sans carte bancaire) pour passer à ${PLAN_SPECS.free.dailyChatLimitUser} messages/jour, ou reviens demain.`;
-    return {
-      code: 'FREE_QUOTA_REACHED',
-      error: `Limite journalière gratuite atteinte (${quota.chatUsedToday}/${quota.dailyChatLimit} messages aujourd'hui). Aucun paiement ni facturation n'est déclenché. ${guestHint}`,
-    };
-  }
-  const guestHint = quota.isAuthenticated
-    ? 'Le compteur gratuit se réinitialise automatiquement demain.'
-    : `Crée un compte gratuit (0 €, sans carte bancaire) pour passer à ${PLAN_SPECS.free.dailyBusinessLimitUser} générations/jour, ou reviens demain.`;
-  return {
-    code: 'FREE_QUOTA_REACHED',
-    error: `Limite journalière gratuite du studio atteinte (${quota.businessUsedToday}/${quota.dailyBusinessLimit} générations aujourd'hui). Aucun paiement ni facturation n'est déclenché. ${guestHint}`,
   };
 }
 
@@ -176,11 +152,16 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
-function sendMappedGeminiJsonError(res: express.Response, err: unknown): void {
+function sendMappedGeminiJsonError(res: express.Response, err: unknown, contextLabel = 'api'): void {
   const mapped = mapGeminiErrorMessage(err);
   if (mapped.retryAfterSec) {
     res.setHeader('Retry-After', String(mapped.retryAfterSec));
   }
+  console.error(`[NOVA AI ${contextLabel}]`, {
+    status: mapped.status,
+    code: mapped.code,
+    message: sanitizeDbErrorMessage(mapped.message),
+  });
   res.status(mapped.status).json({
     code: mapped.code,
     error: mapped.message,
@@ -218,42 +199,64 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     next();
   });
 
-  // CSRF defense-in-depth: validate browser Origin header on mutating API routes
+  // CORS & CSRF defense-in-depth: validate browser Origin header and preflight on API routes
   app.use('/api', (req, res, next) => {
-    if (
-      req.method === 'GET' ||
-      req.method === 'HEAD' ||
-      req.method === 'OPTIONS'
-    ) {
-      next();
-      return;
-    }
     const rawOrigin = req.headers.origin;
-    if (!rawOrigin) {
-      next();
-      return;
-    }
-    try {
-      const originHost = new URL(rawOrigin).host.toLowerCase();
-      const rawHostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '')
-        .split(',')[0]
-        .trim()
-        .toLowerCase();
-      const appUrlEnv = process.env.APP_URL?.trim();
-      const allowedEnvHost =
-        appUrlEnv && appUrlEnv !== 'MY_APP_URL'
-          ? new URL(appUrlEnv).host.toLowerCase()
+    let isAllowedOrigin = false;
+
+    if (rawOrigin) {
+      try {
+        const originHost = new URL(rawOrigin).host.toLowerCase();
+        const rawHostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+          .split(',')[0]
+          .trim()
+          .toLowerCase();
+        const appUrlEnv = process.env.APP_URL?.trim();
+        const allowedEnvHost =
+          appUrlEnv && appUrlEnv !== 'MY_APP_URL'
+            ? new URL(appUrlEnv).host.toLowerCase()
+            : null;
+        const vercelHost = process.env.VERCEL_URL?.trim()
+          ? process.env.VERCEL_URL.trim().replace(/^https?:\/\//, '').toLowerCase()
           : null;
 
-      if (
-        (rawHostHeader && originHost === rawHostHeader) ||
-        (allowedEnvHost && originHost === allowedEnvHost)
-      ) {
-        next();
+        isAllowedOrigin = Boolean(
+          (rawHostHeader && originHost === rawHostHeader) ||
+            (allowedEnvHost && originHost === allowedEnvHost) ||
+            (vercelHost && originHost === vercelHost)
+        );
+      } catch {
+        isAllowedOrigin = false;
+      }
+
+      if (isAllowedOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', rawOrigin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      }
+    }
+
+    if (req.method === 'OPTIONS') {
+      if (rawOrigin && !isAllowedOrigin) {
+        res.status(403).json({
+          code: 'ORIGIN_MISMATCH',
+          error: 'Requête refusée pour des raisons de sécurité (origine non autorisée).',
+        });
         return;
       }
-    } catch {
-      // Malformed Origin header
+      res.status(204).end();
+      return;
+    }
+
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      next();
+      return;
+    }
+    if (!rawOrigin || isAllowedOrigin) {
+      next();
+      return;
     }
     res.status(403).json({
       code: 'ORIGIN_MISMATCH',
@@ -711,7 +714,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       ] = await Promise.all([
         getUserDashboardStats(user.id),
         buildQuotaSnapshot(user, ipHash),
-        listUserConversations(user.id),
+        listUserConversations(user.id, 6),
         listBusinessProjects(user.id),
         listCompanyCreations(user.id),
         listUserPublishedSites(user.id),
@@ -733,7 +736,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     })
   );
 
-  // 5. Conversations & History
+  // 5. Conversations & History (Paginated)
   app.get(
     '/api/conversations',
     asyncRoute(async (req, res) => {
@@ -742,8 +745,14 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
         return;
       }
+      const limit = Number(req.query?.limit ?? 50);
+      const offset = Number(req.query?.offset ?? 0);
+      const page = await listUserConversationsPage(user.id, {
+        limit: Number.isFinite(limit) ? limit : 50,
+        offset: Number.isFinite(offset) ? offset : 0,
+      });
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json({ conversations: await listUserConversations(user.id) });
+      res.json(page);
     })
   );
 
@@ -777,9 +786,22 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(404).json({ code: 'NOT_FOUND', error: 'Conversation introuvable.' });
         return;
       }
-      const messages = await listConversationMessages(conv.id, 300);
+      const limitParam = Number(req.query?.limit ?? 80);
+      const beforeSeqParam =
+        req.query?.beforeSeq !== undefined ? Number(req.query.beforeSeq) : null;
+      const page = await listConversationMessagesPage(conv.id, {
+        limit: Number.isFinite(limitParam) ? limitParam : 80,
+        beforeSeq:
+          beforeSeqParam !== null && Number.isFinite(beforeSeqParam) ? beforeSeqParam : null,
+      });
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json({ conversation: conv, messages });
+      res.json({
+        conversation: conv,
+        messages: page.messages,
+        hasMoreOlder: page.hasMoreOlder,
+        nextBeforeSeq: page.nextBeforeSeq,
+        totalMessages: page.totalMessages,
+      });
     })
   );
 
@@ -868,7 +890,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
       const burst = checkRateLimit(
         `chat:burst:${user ? user.id : ipHash}`,
-        25,
+        FREE_TIER_LIMITS.chatBurstPerMinute,
         60_000
       );
       if (!burst.allowed) {
@@ -882,10 +904,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       }
 
       const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.chatUsedToday >= quota.dailyChatLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('chat', quota));
-        return;
-      }
 
       if (req.body?.attachment && typeof req.body.attachment === 'object') {
         const attName = String(req.body.attachment.name ?? 'document.txt').trim().slice(0, 120);
@@ -928,12 +946,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           contextSummary = existing.context_summary || '';
 
           const isRetry = Boolean(req.body?.isRetry);
-          const [lastMsg, allMsgs] = await Promise.all([
+          const [lastMsg, recentMsgs, totalExistingMessages] = await Promise.all([
             getLastConversationMessage(existing.id),
-            listConversationMessages(existing.id, 300),
+            listConversationMessages(existing.id, 36),
+            countConversationMessages(existing.id),
           ]);
           const prevBeforeLast =
-            allMsgs.length >= 2 ? allMsgs[allMsgs.length - 2] : undefined;
+            recentMsgs.length >= 2 ? recentMsgs[recentMsgs.length - 2] : undefined;
 
           const alreadyTrailingSameUserPrompt =
             lastMsg !== null &&
@@ -948,17 +967,20 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             prevBeforeLast.role === 'user' &&
             prevBeforeLast.content.trim() === message;
 
+          let effectiveHistoryCount = totalExistingMessages;
           if (isRetry && alreadyTrailingSameUserPrompt && lastMsg) {
-            historyForModel = allMsgs
+            historyForModel = recentMsgs
               .filter((m) => m.id !== lastMsg.id)
               .map((m) => ({ role: m.role, content: m.content }));
+            effectiveHistoryCount = Math.max(0, totalExistingMessages - 1);
           } else if (regeneratingLastAssistantReply && lastMsg && prevBeforeLast) {
             await deleteConversationMessage(lastMsg.id, existing.id);
-            historyForModel = allMsgs
+            historyForModel = recentMsgs
               .filter((m) => m.id !== lastMsg.id && m.id !== prevBeforeLast.id)
               .map((m) => ({ role: m.role, content: m.content }));
+            effectiveHistoryCount = Math.max(0, totalExistingMessages - 2);
           } else {
-            historyForModel = allMsgs.map((m) => ({
+            historyForModel = recentMsgs.map((m) => ({
               role: m.role,
               content: m.content,
             }));
@@ -970,21 +992,33 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             });
           }
 
-          // Summarize only very long histories (> 24 messages) to save free API calls
+          // Summarize older slices progressively when conversation grows (> 24 messages) without loading huge histories every turn
           const summarizedCount = existing.summarized_message_count ?? 0;
-          if (historyForModel.length > 24 && historyForModel.length - 12 > summarizedCount + 6) {
-            const olderSlice = historyForModel.slice(summarizedCount, historyForModel.length - 12);
-            const updatedSummary = await runSummarizeHistory({
-              existingSummary: contextSummary,
-              turnsToSummarize: olderSlice,
-            });
-            if (updatedSummary) {
-              contextSummary = updatedSummary;
-              await updateConversationSummary(
-                existing.id,
-                updatedSummary,
-                historyForModel.length - 12
-              );
+          if (effectiveHistoryCount > 24 && effectiveHistoryCount - 12 > summarizedCount + 6) {
+            let olderSlice: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+            if (effectiveHistoryCount <= recentMsgs.length) {
+              olderSlice = historyForModel.slice(summarizedCount, effectiveHistoryCount - 12);
+            } else {
+              const spanNeeded = Math.min(200, effectiveHistoryCount - summarizedCount);
+              const olderWindow = await listConversationMessages(existing.id, spanNeeded + 12);
+              const sliceEnd = Math.max(0, olderWindow.length - 12);
+              olderSlice = olderWindow
+                .slice(0, sliceEnd)
+                .map((m) => ({ role: m.role, content: m.content }));
+            }
+            if (olderSlice.length > 0) {
+              const updatedSummary = await runSummarizeHistory({
+                existingSummary: contextSummary,
+                turnsToSummarize: olderSlice,
+              });
+              if (updatedSummary) {
+                contextSummary = updatedSummary;
+                await updateConversationSummary(
+                  existing.id,
+                  updatedSummary,
+                  effectiveHistoryCount - 12
+                );
+              }
             }
           }
         } else {
@@ -1119,6 +1153,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
       const mapped = mapGeminiErrorMessage(err);
+      console.error('[NOVA AI chat SSE]', {
+        status: mapped.status,
+        code: mapped.code,
+        message: sanitizeDbErrorMessage(mapped.message),
+      });
       sendSseEvent(res, {
         type: 'error',
         status: mapped.status,
@@ -1221,11 +1260,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
-        return;
-      }
     } catch (err) {
       next(err);
       return;
@@ -1317,6 +1351,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
       const mapped = mapGeminiErrorMessage(err);
+      console.error('[NOVA AI business SSE]', {
+        status: mapped.status,
+        code: mapped.code,
+        message: sanitizeDbErrorMessage(mapped.message),
+      });
       sendSseEvent(res, {
         type: 'error',
         status: mapped.status,
@@ -1381,11 +1420,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           retryAfterSec: burst.retryAfterSec,
           error: `Patiente ${burst.retryAfterSec} secondes avant de relancer une génération complète.`,
         });
-        return;
-      }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
         return;
       }
 
@@ -1482,11 +1516,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
-        return;
-      }
 
       const brandName = String(req.body?.brandName ?? '').trim();
       const sector = String(req.body?.sector ?? '').trim();
@@ -1542,11 +1571,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           retryAfterSec: burst.retryAfterSec,
           error: `Patiente ${burst.retryAfterSec} secondes.`,
         });
-        return;
-      }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
         return;
       }
 
@@ -1718,11 +1742,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
-        return;
-      }
 
       const formatKey = String(req.body?.formatKey ?? 'tiktok_script').trim();
       const topic = String(req.body?.topic ?? '').trim();
@@ -1746,7 +1765,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'content/generate');
       }
     })
   );
@@ -1772,11 +1791,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           retryAfterSec: burst.retryAfterSec,
           error: `Patiente ${burst.retryAfterSec} secondes.`,
         });
-        return;
-      }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
         return;
       }
 
@@ -1888,11 +1902,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
-      const quota = await buildQuotaSnapshot(user, ipHash);
-      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
-        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
-        return;
-      }
 
       const docType = String(req.body?.docType ?? 'Proposition commerciale').trim();
       const title = String(req.body?.title ?? '').trim();
@@ -1918,7 +1927,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           context,
         });
       } catch (err) {
-        sendMappedGeminiJsonError(res, err);
+        sendMappedGeminiJsonError(res, err, 'documents/generate');
         return;
       }
 
@@ -1955,6 +1964,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       next: express.NextFunction
     ) => {
       if (req.originalUrl.startsWith('/api')) {
+        const sanitizedMsg = sanitizeDbErrorMessage(err);
+        console.error('[NOVA AI API ERROR]', {
+          method: req.method,
+          path: req.path,
+          message: sanitizedMsg,
+        });
         if (res.headersSent) {
           res.end();
           return;
@@ -1970,7 +1985,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         }
         res.status(500).json({
           code: 'SERVER_ERROR',
-          error: sanitizeDbErrorMessage(err),
+          error: sanitizedMsg,
         });
         return;
       }

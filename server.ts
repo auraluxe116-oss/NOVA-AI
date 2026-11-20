@@ -37,6 +37,9 @@ async function startServer() {
   const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`NOVA AI server listening on http://localhost:${PORT}`);
   });
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout = 66_000;
+  httpServer.requestTimeout = 120_000;
 
   const shutdown = async () => {
     httpServer.close(async () => {

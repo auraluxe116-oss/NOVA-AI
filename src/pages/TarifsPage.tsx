@@ -19,13 +19,13 @@ const CAPABILITY_ROWS: Array<{
   },
   {
     feature: 'Assistant IA temps réel (SSE)',
-    guest: '25 messages / jour',
-    authenticated: '100 messages / jour',
+    guest: 'Continu (quotas gratuits Gemini)',
+    authenticated: 'Continu (quotas gratuits Gemini)',
   },
   {
     feature: 'Studio Business, Contenu, Vidéo & PDF',
-    guest: '10 générations / jour',
-    authenticated: '40 générations / jour',
+    guest: 'Accès gratuit (quotas Gemini)',
+    authenticated: 'Accès gratuit + Sauvegarde',
   },
   {
     feature: 'Suite 18 Modules & Calculateur Marges',
@@ -77,9 +77,9 @@ export function TarifsPage({ user, quota, onNavigate }: TarifsPageProps) {
         <div>
           <p className="font-semibold text-white">Garantie stricte 0 € — Zéro coût caché</p>
           <p className="mt-0.5 text-emerald-100/90">
-            Si le quota journalier gratuit ou le quota technique Google Gemini (HTTP 429) est
-            atteint, NOVA AI affiche simplement un message clair avec réinitialisation le lendemain
-            — jamais de bascule payante, ni de prélèvement.
+            NOVA AI n&apos;impose aucun quota commercial artificiel de messages. Lorsque les quotas
+            gratuits du moteur Google Gemini ou le débit technique sont atteints (HTTP 429), un
+            message clair indique quand réessayer — jamais de bascule payante, ni de prélèvement.
           </p>
         </div>
       </div>
@@ -98,18 +98,18 @@ export function TarifsPage({ user, quota, onNavigate }: TarifsPageProps) {
               <span className="text-xs text-[#8D8DA4]">/ pour toujours</span>
             </div>
             <p className="mt-2 text-xs text-[#A5A5BB]">
-              Testez l&apos;assistant IA, les 18 modules business, le studio contenu et le studio
+              Utilisez l&apos;assistant IA, les 18 modules business, le studio contenu et le studio
               vidéo sans même créer de compte.
             </p>
 
             <ul className="mt-6 space-y-3 text-sm text-[#D6D6E6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
-                <span>25 messages Assistant IA / jour</span>
+                <span>Assistant IA continu (selon quotas gratuits Google Gemini)</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
-                <span>10 générations Studio Business / jour</span>
+                <span>Accès complet au Studio Business sans blocage artificiel</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#3B82F6]" />
@@ -152,11 +152,11 @@ export function TarifsPage({ user, quota, onNavigate }: TarifsPageProps) {
             <ul className="mt-6 space-y-3 text-sm text-[#ECECF6]">
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>100 messages Assistant IA / jour + mémoire longue</span>
+                <span>Discussions continues + mémoire longue automatique sans plafond applicatif</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
-                <span>40 générations Studio Business / jour</span>
+                <span>Studio Business, Création d&apos;entreprise, Vidéo &amp; PDF complets</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#A78BFA]" />
@@ -170,13 +170,13 @@ export function TarifsPage({ user, quota, onNavigate }: TarifsPageProps) {
 
             {quota && (
               <div className="mt-5 rounded-lg border border-[#3B2B68] bg-[#0E0C1A] px-3.5 py-2.5 text-xs text-[#DDD6FE]">
-                Utilisation du jour :{' '}
+                Activité du jour :{' '}
                 <span className="font-mono font-semibold text-white">
-                  {quota.chatUsedToday}/{quota.dailyChatLimit} chat
+                  {quota.chatUsedToday} messages chat
                 </span>{' '}
                 ·{' '}
                 <span className="font-mono font-semibold text-white">
-                  {quota.businessUsedToday}/{quota.dailyBusinessLimit} studio
+                  {quota.businessUsedToday} générations studio
                 </span>
               </div>
             )}
@@ -196,7 +196,7 @@ export function TarifsPage({ user, quota, onNavigate }: TarifsPageProps) {
       <section className="mx-auto mt-14 max-w-5xl rounded-xl border border-[#232332] bg-[#111117] overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1F1F2D] px-6 py-4">
           <h2 className="font-display text-lg font-semibold text-white">
-            Détail des quotas gratuits (0 €) &amp; modèles utilisés
+            Capacités gratuites (0 €) &amp; modèles utilisés
           </h2>
           <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[#93C5FD]">
             <Cpu className="h-3.5 w-3.5" />

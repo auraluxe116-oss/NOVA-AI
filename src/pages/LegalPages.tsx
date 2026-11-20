@@ -99,22 +99,24 @@ export function LegalPages({ mode, user, onNavigate }: LegalPagesProps) {
 
           <section className="rounded-xl border border-[#232332] bg-[#111117] p-6 space-y-2.5">
             <h2 className="text-white font-display font-semibold text-base">
-              2. Quotas gratuits et comportement en cas de limite atteinte
+              2. Fonctionnement continu et comportement en cas de limite fournisseur
             </h2>
             <ul className="list-disc pl-5 space-y-1.5 text-[#B2B2C6]">
               <li>
-                <strong className="text-white">Visiteurs (sans compte) :</strong> 25 messages
-                Assistant IA par jour et 10 générations Studio Business par jour.
+                <strong className="text-white">Visiteurs &amp; Comptes gratuits :</strong> aucun
+                plafond journalier artificiel de messages n&apos;est imposé par NOVA AI ; une
+                protection anti-rafale technique protège la disponibilité du service.
               </li>
               <li>
-                <strong className="text-white">Comptes gratuits enregistrés :</strong> 100 messages
-                Assistant IA par jour, 40 générations Studio Business par jour et jusqu&apos;à 10
-                sites HTML publiés.
+                <strong className="text-white">Comptes gratuits enregistrés :</strong> sauvegarde
+                de l&apos;historique des conversations, projets business, documents et jusqu&apos;à
+                10 sites HTML publiés gratuitement.
               </li>
               <li>
-                <strong className="text-white">Aucune facturation de dépassement :</strong> si une
-                limite journalière ou un quota technique gratuit du moteur Google Gemini est atteint,
-                un message explicatif s&apos;affiche sans déclencher de coût ni de prélèvement.
+                <strong className="text-white">Aucune facturation de dépassement :</strong> si les
+                quotas gratuits ou le débit du fournisseur Google Gemini sont temporairement
+                atteints, un message explicatif s&apos;affiche sans déclencher de coût ni de
+                prélèvement.
               </li>
             </ul>
           </section>

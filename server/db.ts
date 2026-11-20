@@ -107,6 +107,8 @@ export function sanitizeDbErrorMessage(err: unknown): string {
   return raw
     .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, 'postgresql://[MASQUE]')
     .replace(/password=[^\s&'"]+/gi, 'password=[MASQUE]')
+    .replace(/AIza[A-Za-z0-9_-]{10,}/g, '[MASQUE]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [MASQUE]')
     .slice(0, 260);
 }
 
@@ -819,6 +821,7 @@ export interface ConversationRow {
 
 export interface MessageRow {
   id: string;
+  seq?: number;
   conversation_id: string;
   role: 'user' | 'assistant';
   content: string;
@@ -851,6 +854,7 @@ function normalizeConversationRow(row: Record<string, unknown>): ConversationRow
 function normalizeMessageRow(row: Record<string, unknown>): MessageRow {
   return {
     id: String(row.id),
+    seq: row.seq !== undefined && row.seq !== null ? Number(row.seq) : undefined,
     conversation_id: String(row.conversation_id),
     role: row.role === 'assistant' ? 'assistant' : 'user',
     content: String(row.content ?? ''),
@@ -865,13 +869,29 @@ function normalizeMessageRow(row: Record<string, unknown>): MessageRow {
   };
 }
 
-export async function listUserConversations(userId: string): Promise<ConversationRow[]> {
+export async function listUserConversationsPage(
+  userId: string,
+  options?: { limit?: number; offset?: number }
+): Promise<{ conversations: ConversationRow[]; hasMore: boolean; total: number }> {
   const db = await ensureDatabaseReady();
-  const convRes = await db.query(
-    `SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 150`,
-    [userId]
-  );
-  if (convRes.rows.length === 0) return [];
+  const limit = Math.max(1, Math.min(150, Number(options?.limit ?? 50)));
+  const offset = Math.max(0, Number(options?.offset ?? 0));
+
+  const [totalRes, convRes] = await Promise.all([
+    db.query<{ total: number }>(
+      'SELECT COUNT(*)::int AS total FROM conversations WHERE user_id = $1',
+      [userId]
+    ),
+    db.query(
+      `SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    ),
+  ]);
+
+  const total = Number(totalRes.rows[0]?.total ?? 0);
+  if (convRes.rows.length === 0) {
+    return { conversations: [], hasMore: false, total };
+  }
 
   const convIds = convRes.rows.map((r) => String(r.id));
   const [countsRes, latestRes] = await Promise.all([
@@ -901,12 +921,26 @@ export async function listUserConversations(userId: string): Promise<Conversatio
     previewMap.set(String(row.conversation_id), String(row.preview ?? ''));
   }
 
-  return convRes.rows.map((row) => {
+  const conversations = convRes.rows.map((row) => {
     const conv = normalizeConversationRow(row);
     conv.message_count = countMap.get(conv.id) ?? 0;
     conv.last_message_preview = previewMap.get(conv.id);
     return conv;
   });
+
+  return {
+    conversations,
+    hasMore: offset + conversations.length < total,
+    total,
+  };
+}
+
+export async function listUserConversations(
+  userId: string,
+  limit = 150
+): Promise<ConversationRow[]> {
+  const page = await listUserConversationsPage(userId, { limit, offset: 0 });
+  return page.conversations;
 }
 
 export async function getConversationForUser(
@@ -981,22 +1015,113 @@ export async function deleteConversation(conversationId: string, userId: string)
   return res.rowCount > 0 || res.rows.length > 0;
 }
 
+export interface PublicMessageDTO {
+  id: string;
+  seq?: number;
+  conversationId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  sources: SourceLink[];
+  attachmentName: string | null;
+  modelUsed: string | null;
+  latencyMs: number | null;
+  createdAt: string;
+}
+
+function toPublicMessageDto(raw: Record<string, unknown>): PublicMessageDTO {
+  const row = normalizeMessageRow(raw);
+  let sources: SourceLink[] = [];
+  try {
+    const parsed = JSON.parse(row.sources_json);
+    if (Array.isArray(parsed)) sources = parsed;
+  } catch {
+    sources = [];
+  }
+  return {
+    id: row.id,
+    seq: row.seq,
+    conversationId: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    sources,
+    attachmentName: row.attachment_name,
+    modelUsed: row.model_used,
+    latencyMs: row.latency_ms,
+    createdAt: row.created_at,
+  };
+}
+
+export async function countConversationMessages(conversationId: string): Promise<number> {
+  const db = await ensureDatabaseReady();
+  const res = await db.query<{ total: number }>(
+    'SELECT COUNT(*)::int AS total FROM messages WHERE conversation_id = $1',
+    [conversationId]
+  );
+  return Number(res.rows[0]?.total ?? 0);
+}
+
+export async function listConversationMessagesPage(
+  conversationId: string,
+  options?: { limit?: number; beforeSeq?: number | null }
+): Promise<{
+  messages: PublicMessageDTO[];
+  hasMoreOlder: boolean;
+  nextBeforeSeq: number | null;
+  totalMessages: number;
+}> {
+  const db = await ensureDatabaseReady();
+  const limit = Math.max(1, Math.min(300, Number(options?.limit ?? 60)));
+  const beforeSeq =
+    typeof options?.beforeSeq === 'number' && Number.isFinite(options.beforeSeq) && options.beforeSeq > 0
+      ? Math.floor(options.beforeSeq)
+      : null;
+
+  const [totalMessages, res] = await Promise.all([
+    countConversationMessages(conversationId),
+    beforeSeq !== null
+      ? db.query(
+          `SELECT * FROM (
+             SELECT *
+             FROM messages
+             WHERE conversation_id = $1 AND seq < $2
+             ORDER BY seq DESC
+             LIMIT $3
+           ) sub
+           ORDER BY seq ASC`,
+          [conversationId, beforeSeq, limit + 1]
+        )
+      : db.query(
+          `SELECT * FROM (
+             SELECT *
+             FROM messages
+             WHERE conversation_id = $1
+             ORDER BY created_at DESC, seq DESC
+             LIMIT $2
+           ) sub
+           ORDER BY created_at ASC, seq ASC`,
+          [conversationId, limit + 1]
+        ),
+  ]);
+
+  const hasMoreOlder = res.rows.length > limit;
+  const trimmedRows = hasMoreOlder ? res.rows.slice(res.rows.length - limit) : res.rows;
+  const messages = trimmedRows.map(toPublicMessageDto);
+  const firstSeq = messages[0]?.seq;
+  const nextBeforeSeq =
+    hasMoreOlder && typeof firstSeq === 'number' && Number.isFinite(firstSeq) ? firstSeq : null;
+
+  return {
+    messages,
+    hasMoreOlder,
+    nextBeforeSeq,
+    totalMessages,
+  };
+}
+
 export async function listConversationMessages(
   conversationId: string,
   limit = 300
-): Promise<
-  Array<{
-    id: string;
-    conversationId: string;
-    role: 'user' | 'assistant';
-    content: string;
-    sources: SourceLink[];
-    attachmentName: string | null;
-    modelUsed: string | null;
-    latencyMs: number | null;
-    createdAt: string;
-  }>
-> {
+): Promise<PublicMessageDTO[]> {
   const db = await ensureDatabaseReady();
   const res = await db.query(
     `SELECT * FROM (
@@ -1009,28 +1134,7 @@ export async function listConversationMessages(
      ORDER BY created_at ASC, seq ASC`,
     [conversationId, limit]
   );
-
-  return res.rows.map((raw) => {
-    const row = normalizeMessageRow(raw);
-    let sources: SourceLink[] = [];
-    try {
-      const parsed = JSON.parse(row.sources_json);
-      if (Array.isArray(parsed)) sources = parsed;
-    } catch {
-      sources = [];
-    }
-    return {
-      id: row.id,
-      conversationId: row.conversation_id,
-      role: row.role,
-      content: row.content,
-      sources,
-      attachmentName: row.attachment_name,
-      modelUsed: row.model_used,
-      latencyMs: row.latency_ms,
-      createdAt: row.created_at,
-    };
-  });
+  return res.rows.map(toPublicMessageDto);
 }
 
 export async function getLastConversationMessage(

@@ -23,15 +23,10 @@ export interface UserPreferences {
   autoWebSearch: boolean;
 }
 
-export const FREE_TIER_DAILY_LIMITS = {
-  guest: {
-    chat: 25,
-    business: 10,
-  },
-  user: {
-    chat: 100,
-    business: 40,
-  },
+export const FREE_TIER_LIMITS = {
+  maxAttachmentBytes: 512 * 1024,
+  maxPublishedSites: 10,
+  chatBurstPerMinute: 30,
 } as const;
 
 export interface PlanSpec {
@@ -41,10 +36,10 @@ export interface PlanSpec {
   monthlyPriceEur: 0;
   maxAttachmentBytes: number;
   maxPublishedSites: number;
-  dailyChatLimitGuest: number;
-  dailyChatLimitUser: number;
-  dailyBusinessLimitGuest: number;
-  dailyBusinessLimitUser: number;
+  dailyChatLimitGuest: number | null;
+  dailyChatLimitUser: number | null;
+  dailyBusinessLimitGuest: number | null;
+  dailyBusinessLimitUser: number | null;
   webSearchIncluded: boolean;
   fullBusinessSuite: boolean;
   companyCreationSuite: boolean;
@@ -55,14 +50,15 @@ export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
   free: {
     id: 'free',
     name: 'GRATUIT · 0 €',
-    tagline: 'Plateforme IA 100 % gratuite (budget strict 0 €) — sans carte bancaire ni abonnement',
+    tagline:
+      'Plateforme IA 100 % gratuite (budget strict 0 €) — sans carte bancaire, sans abonnement et sans limite artificielle de messages',
     monthlyPriceEur: 0,
-    maxAttachmentBytes: 512 * 1024,
-    maxPublishedSites: 10,
-    dailyChatLimitGuest: FREE_TIER_DAILY_LIMITS.guest.chat,
-    dailyChatLimitUser: FREE_TIER_DAILY_LIMITS.user.chat,
-    dailyBusinessLimitGuest: FREE_TIER_DAILY_LIMITS.guest.business,
-    dailyBusinessLimitUser: FREE_TIER_DAILY_LIMITS.user.business,
+    maxAttachmentBytes: FREE_TIER_LIMITS.maxAttachmentBytes,
+    maxPublishedSites: FREE_TIER_LIMITS.maxPublishedSites,
+    dailyChatLimitGuest: null,
+    dailyChatLimitUser: null,
+    dailyBusinessLimitGuest: null,
+    dailyBusinessLimitUser: null,
     webSearchIncluded: true,
     fullBusinessSuite: true,
     companyCreationSuite: true,

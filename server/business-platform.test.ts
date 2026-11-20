@@ -169,6 +169,11 @@ test('buildAssistantSystemInstruction intègre les 11 domaines business, le plan
   assert.match(noSearchConfirm, /offres gratuites vs payantes/i);
   assert.match(noSearchConfirm, /Ne garantis JAMAIS de revenus/i);
   assert.match(noSearchConfirm, /législation française/i);
+  assert.match(noSearchConfirm, /formalites\.entreprises\.gouv\.fr/i);
+  assert.match(noSearchConfirm, /10\s*000\s*€/);
+  assert.match(noSearchConfirm, /RC Pro/i);
+  assert.match(noSearchConfirm, /trésorerie/i);
+  assert.match(noSearchConfirm, /eval\(/i);
   assert.match(noSearchConfirm, /NIVEAU UTILISATEUR : Confirmé/);
   assert.match(noSearchConfirm, /RECHERCHE WEB NON ACTIVÉE/);
   assert.match(noSearchConfirm, /Budget initial 1500 EUR/);

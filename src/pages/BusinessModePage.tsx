@@ -737,9 +737,10 @@ export function BusinessModePage({
           <div className="rounded-lg border border-[#232332] bg-[#111117] px-4 py-2.5 text-xs">
             <span className="text-[#9E9EB5]">Générations du jour : </span>
             <span className="font-mono font-semibold tabular-nums text-white">
-              {quota.businessUsedToday} / {quota.dailyBusinessLimit}
+              {quota.businessUsedToday}
+              {quota.dailyBusinessLimit !== null ? ` / ${quota.dailyBusinessLimit}` : ''}
             </span>
-            <span className="ml-1.5 text-emerald-400">· Gratuit 0 €</span>
+            <span className="ml-1.5 text-emerald-400">· Gratuit 0 € (quotas Gemini)</span>
           </div>
         )}
       </div>

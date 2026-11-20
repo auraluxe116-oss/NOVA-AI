@@ -145,8 +145,8 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
             {resetMode
               ? 'Utilisez votre e-mail et le code de récupération remis lors de votre inscription.'
               : isRegister
-              ? 'Accès 100 % gratuit (0 €) sans carte bancaire : 100 messages/jour, historique et projets sauvegardés.'
-              : 'Retrouvez vos conversations, vos entreprises créées, vos documents et vos quotas gratuits.'}
+              ? 'Accès 100 % gratuit (0 €) sans carte bancaire : discussions continues, historique et projets sauvegardés.'
+              : 'Retrouvez vos conversations, vos entreprises créées, vos documents et votre espace gratuit.'}
           </p>
         </div>
 
