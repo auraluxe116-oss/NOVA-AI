@@ -4,12 +4,9 @@ import { Pool as PgPool, type PoolConfig } from 'pg';
 import { DataType, newDb } from 'pg-mem';
 import {
   resolveEffectivePlan,
-  type BillingInterval,
   type PlanTier,
   type PublicUser,
   type SourceLink,
-  type SubscriptionRow,
-  type SubscriptionStatus,
   type UserPreferences,
   type UserRecord,
 } from './types.js';
@@ -34,7 +31,7 @@ export interface DatabaseHealthReport {
   connected: boolean;
   engine: 'postgresql';
   provider: 'neon' | 'postgresql' | 'pg-mem' | 'unconfigured';
-  ephemeral: false;
+  ephemeral: boolean;
   latencyMs: number | null;
   schemaVersion: number | null;
   error: string | null;
@@ -166,7 +163,7 @@ function createPgPoolAdapter(connectionString: string): SqlQueryAdapter {
 
   const pool = new PgPool(config);
   pool.on('error', (err) => {
-    console.error('[NOVA AI PRO] Erreur pool PostgreSQL:', sanitizeDbErrorMessage(err));
+    console.error('[NOVA AI] Erreur pool PostgreSQL:', sanitizeDbErrorMessage(err));
   });
 
   return {
@@ -261,9 +258,20 @@ function getOrCreateAdapter(): SqlQueryAdapter {
 
   const connectionString = getConfiguredDatabaseUrl();
   if (!connectionString) {
-    throw new Error(
-      'DATABASE_URL_MISSING: La variable d’environnement DATABASE_URL (Neon PostgreSQL) est requise.'
-    );
+    if (isServerlessRuntime()) {
+      throw new Error(
+        'DATABASE_URL_MISSING: La variable d’environnement DATABASE_URL (Neon PostgreSQL gratuit) est requise en serverless.'
+      );
+    }
+    if (reg.adapter && reg.connectionString === '__pg_mem_local__') {
+      return reg.adapter;
+    }
+    const memAdapter = createMemoryPgAdapter();
+    reg.connectionString = '__pg_mem_local__';
+    reg.adapter = memAdapter;
+    reg.migratedAdapter = null;
+    reg.migrationPromise = null;
+    return memAdapter;
   }
 
   if (reg.adapter && reg.connectionString === connectionString) {
@@ -522,7 +530,8 @@ export async function ensureDatabaseReady(): Promise<SqlQueryAdapter> {
 
 export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
   const reg = getRegistry();
-  const configured = Boolean(reg.testOverrideAdapter || getConfiguredDatabaseUrl());
+  const hasRealUrl = Boolean(getConfiguredDatabaseUrl());
+  const configured = Boolean(reg.testOverrideAdapter || hasRealUrl || !isServerlessRuntime());
 
   if (!configured) {
     return {
@@ -544,12 +553,13 @@ export async function checkDatabaseHealth(): Promise<DatabaseHealthReport> {
     const verRes = await adapter.query<{ v: number }>(
       'SELECT COALESCE(MAX(version), 0)::int AS v FROM schema_migrations'
     );
+    const isLocalEphemeral = !reg.testOverrideAdapter && !hasRealUrl && adapter.provider === 'pg-mem';
     return {
       configured: true,
       connected: true,
       engine: 'postgresql',
       provider: adapter.provider,
-      ephemeral: false,
+      ephemeral: isLocalEphemeral,
       latencyMs: Date.now() - started,
       schemaVersion: Number(verRes.rows[0]?.v ?? 0),
       error: null,
@@ -574,12 +584,6 @@ function toIsoString(val: unknown): string {
   return new Date().toISOString();
 }
 
-function toNullableIsoString(val: unknown): string | null {
-  if (val === null || val === undefined || val === '') return null;
-  if (val instanceof Date) return val.toISOString();
-  return String(val);
-}
-
 function normalizeUserRow(row: Record<string, unknown>): UserRecord {
   return {
     id: String(row.id),
@@ -587,39 +591,10 @@ function normalizeUserRow(row: Record<string, unknown>): UserRecord {
     password_hash: String(row.password_hash),
     display_name: String(row.display_name),
     company_name: String(row.company_name ?? ''),
-    plan: (row.plan as PlanTier) || 'free',
-    billing_interval: (row.billing_interval as BillingInterval) || 'monthly',
-    subscription_status: (row.subscription_status as SubscriptionStatus) || 'inactive',
-    cancel_at_period_end: Number(row.cancel_at_period_end ?? 0),
-    stripe_customer_id: row.stripe_customer_id ? String(row.stripe_customer_id) : null,
-    stripe_subscription_id: row.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
-    current_period_end: toNullableIsoString(row.current_period_end),
+    plan: 'free',
     recovery_code_hash: row.recovery_code_hash ? String(row.recovery_code_hash) : null,
     preferences_json: row.preferences_json ? String(row.preferences_json) : '{}',
     token_version: Number(row.token_version ?? 1),
-    created_at: toIsoString(row.created_at),
-    updated_at: toIsoString(row.updated_at),
-  };
-}
-
-function normalizeSubscriptionRow(row: Record<string, unknown>): SubscriptionRow {
-  return {
-    id: String(row.id),
-    user_id: String(row.user_id),
-    stripe_customer_id: row.stripe_customer_id ? String(row.stripe_customer_id) : null,
-    stripe_subscription_id: row.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
-    stripe_checkout_session_id: row.stripe_checkout_session_id
-      ? String(row.stripe_checkout_session_id)
-      : null,
-    plan: (row.plan as PlanTier) || 'free',
-    billing_interval: (row.billing_interval as BillingInterval) || 'monthly',
-    amount_cents: Number(row.amount_cents ?? 0),
-    currency: String(row.currency ?? 'eur'),
-    status: String(row.status ?? 'inactive'),
-    cancel_at_period_end: Number(row.cancel_at_period_end ?? 0),
-    current_period_start: toNullableIsoString(row.current_period_start),
-    current_period_end: toNullableIsoString(row.current_period_end),
-    canceled_at: toNullableIsoString(row.canceled_at),
     created_at: toIsoString(row.created_at),
     updated_at: toIsoString(row.updated_at),
   };
@@ -640,21 +615,18 @@ function parsePreferences(raw: string | null | undefined): UserPreferences {
   if (!raw) return { ...DEFAULT_USER_PREFERENCES };
   try {
     const parsed = JSON.parse(raw) as Partial<UserPreferences>;
+    const rawModel = typeof parsed.preferredModel === 'string' ? parsed.preferredModel.trim() : '';
+    const allowedModel =
+      rawModel === 'gemini-3.1-flash-lite' || rawModel === 'gemini-4-hydrogen'
+        ? rawModel
+        : 'gemini-4-hydrogen';
     return {
       defaultExperience:
         parsed.defaultExperience === 'intermediaire' || parsed.defaultExperience === 'confirme'
           ? parsed.defaultExperience
           : 'debutant',
-      preferredProvider:
-        parsed.preferredProvider === 'openai' ||
-        parsed.preferredProvider === 'anthropic' ||
-        parsed.preferredProvider === 'mistral'
-          ? parsed.preferredProvider
-          : 'gemini',
-      preferredModel:
-        typeof parsed.preferredModel === 'string' && parsed.preferredModel.trim()
-          ? parsed.preferredModel.trim()
-          : 'gemini-4-hydrogen',
+      preferredProvider: 'gemini',
+      preferredModel: allowedModel,
       autoWebSearch: Boolean(parsed.autoWebSearch),
     };
   } catch {
@@ -663,22 +635,15 @@ function parsePreferences(raw: string | null | undefined): UserPreferences {
 }
 
 export function toPublicUser(row: UserRecord): PublicUser {
-  const validPlans: PlanTier[] = ['free', 'pro', 'business'];
-  const plan: PlanTier = validPlans.includes(row.plan) ? row.plan : 'free';
-  const effectivePlan = resolveEffectivePlan(row);
+  const effectivePlan: PlanTier = resolveEffectivePlan();
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
     companyName: row.company_name || '',
-    plan,
+    plan: effectivePlan,
     effectivePlan,
-    billingInterval: row.billing_interval === 'annual' ? 'annual' : 'monthly',
-    subscriptionStatus: (row.subscription_status as SubscriptionStatus) || 'inactive',
-    cancelAtPeriodEnd: Boolean(row.cancel_at_period_end),
-    stripeCustomerId: row.stripe_customer_id ?? null,
-    stripeSubscriptionId: row.stripe_subscription_id ?? null,
-    currentPeriodEnd: row.current_period_end ?? null,
+    zeroCostMode: true,
     hasRecoveryCode: Boolean(row.recovery_code_hash),
     preferences: parsePreferences(row.preferences_json),
     createdAt: row.created_at,
@@ -696,24 +661,6 @@ export async function findUserByEmail(email: string): Promise<UserRecord | null>
 export async function findUserById(id: string): Promise<UserRecord | null> {
   const db = await ensureDatabaseReady();
   const res = await db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [id]);
-  return res.rows[0] ? normalizeUserRow(res.rows[0]) : null;
-}
-
-export async function findUserByStripeCustomerId(customerId: string): Promise<UserRecord | null> {
-  const db = await ensureDatabaseReady();
-  const res = await db.query('SELECT * FROM users WHERE stripe_customer_id = $1 LIMIT 1', [
-    customerId,
-  ]);
-  return res.rows[0] ? normalizeUserRow(res.rows[0]) : null;
-}
-
-export async function findUserByStripeSubscriptionId(
-  subscriptionId: string
-): Promise<UserRecord | null> {
-  const db = await ensureDatabaseReady();
-  const res = await db.query('SELECT * FROM users WHERE stripe_subscription_id = $1 LIMIT 1', [
-    subscriptionId,
-  ]);
   return res.rows[0] ? normalizeUserRow(res.rows[0]) : null;
 }
 
@@ -838,13 +785,12 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
     }))
   );
 
-  const [businessProjects, companyCreations, publishedSites, documents, subscriptions] =
+  const [businessProjects, companyCreations, publishedSites, documents] =
     await Promise.all([
       listBusinessProjects(userId),
       listCompanyCreations(userId),
       listUserPublishedSites(userId),
       listUserDocuments(userId),
-      listUserSubscriptions(userId),
     ]);
 
   return {
@@ -855,163 +801,7 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
     companyCreations,
     publishedSites,
     documents,
-    subscriptions,
   };
-}
-
-export async function updateUserSubscription(
-  userId: string,
-  updates: {
-    plan: PlanTier;
-    billingInterval?: BillingInterval;
-    subscriptionStatus: SubscriptionStatus;
-    cancelAtPeriodEnd?: boolean;
-    stripeCustomerId?: string | null;
-    stripeSubscriptionId?: string | null;
-    currentPeriodEnd?: string | null;
-  }
-): Promise<UserRecord | null> {
-  const db = await ensureDatabaseReady();
-  const current = await findUserById(userId);
-  if (!current) return null;
-  const now = new Date().toISOString();
-
-  const res = await db.query(
-    `UPDATE users SET
-      plan = $1,
-      billing_interval = $2,
-      subscription_status = $3,
-      cancel_at_period_end = $4,
-      stripe_customer_id = $5,
-      stripe_subscription_id = $6,
-      current_period_end = $7,
-      updated_at = $8
-    WHERE id = $9
-    RETURNING *`,
-    [
-      updates.plan,
-      updates.billingInterval ?? current.billing_interval,
-      updates.subscriptionStatus,
-      updates.cancelAtPeriodEnd !== undefined
-        ? updates.cancelAtPeriodEnd
-          ? 1
-          : 0
-        : current.cancel_at_period_end,
-      updates.stripeCustomerId !== undefined
-        ? updates.stripeCustomerId
-        : current.stripe_customer_id,
-      updates.stripeSubscriptionId !== undefined
-        ? updates.stripeSubscriptionId
-        : current.stripe_subscription_id,
-      updates.currentPeriodEnd !== undefined
-        ? updates.currentPeriodEnd
-        : current.current_period_end,
-      now,
-      userId,
-    ]
-  );
-
-  return res.rows[0] ? normalizeUserRow(res.rows[0]) : null;
-}
-
-export async function upsertSubscriptionRecord(params: {
-  userId: string;
-  stripeCustomerId?: string | null;
-  stripeSubscriptionId?: string | null;
-  stripeCheckoutSessionId?: string | null;
-  plan: PlanTier;
-  billingInterval: BillingInterval;
-  amountCents: number;
-  currency?: string;
-  status: string;
-  cancelAtPeriodEnd?: boolean;
-  currentPeriodStart?: string | null;
-  currentPeriodEnd?: string | null;
-  canceledAt?: string | null;
-}): Promise<SubscriptionRow> {
-  const db = await ensureDatabaseReady();
-  const now = new Date().toISOString();
-
-  if (params.stripeSubscriptionId) {
-    const id = crypto.randomUUID();
-    const res = await db.query(
-      `INSERT INTO subscriptions (
-        id, user_id, stripe_customer_id, stripe_subscription_id, stripe_checkout_session_id,
-        plan, billing_interval, amount_cents, currency, status, cancel_at_period_end,
-        current_period_start, current_period_end, canceled_at, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-      ON CONFLICT (stripe_subscription_id) DO UPDATE SET
-        stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, subscriptions.stripe_customer_id),
-        stripe_checkout_session_id = COALESCE(EXCLUDED.stripe_checkout_session_id, subscriptions.stripe_checkout_session_id),
-        plan = EXCLUDED.plan,
-        billing_interval = EXCLUDED.billing_interval,
-        amount_cents = CASE WHEN EXCLUDED.amount_cents > 0 THEN EXCLUDED.amount_cents ELSE subscriptions.amount_cents END,
-        status = EXCLUDED.status,
-        cancel_at_period_end = EXCLUDED.cancel_at_period_end,
-        current_period_start = COALESCE(EXCLUDED.current_period_start, subscriptions.current_period_start),
-        current_period_end = COALESCE(EXCLUDED.current_period_end, subscriptions.current_period_end),
-        canceled_at = COALESCE(EXCLUDED.canceled_at, subscriptions.canceled_at),
-        updated_at = EXCLUDED.updated_at
-      RETURNING *`,
-      [
-        id,
-        params.userId,
-        params.stripeCustomerId ?? null,
-        params.stripeSubscriptionId,
-        params.stripeCheckoutSessionId ?? null,
-        params.plan,
-        params.billingInterval,
-        params.amountCents,
-        params.currency ?? 'eur',
-        params.status,
-        params.cancelAtPeriodEnd ? 1 : 0,
-        params.currentPeriodStart ?? null,
-        params.currentPeriodEnd ?? null,
-        params.canceledAt ?? null,
-        now,
-        now,
-      ]
-    );
-    return normalizeSubscriptionRow(res.rows[0]!);
-  }
-
-  const id = crypto.randomUUID();
-  const res = await db.query(
-    `INSERT INTO subscriptions (
-      id, user_id, stripe_customer_id, stripe_subscription_id, stripe_checkout_session_id,
-      plan, billing_interval, amount_cents, currency, status, cancel_at_period_end,
-      current_period_start, current_period_end, canceled_at, created_at, updated_at
-    ) VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-    RETURNING *`,
-    [
-      id,
-      params.userId,
-      params.stripeCustomerId ?? null,
-      params.stripeCheckoutSessionId ?? null,
-      params.plan,
-      params.billingInterval,
-      params.amountCents,
-      params.currency ?? 'eur',
-      params.status,
-      params.cancelAtPeriodEnd ? 1 : 0,
-      params.currentPeriodStart ?? null,
-      params.currentPeriodEnd ?? null,
-      params.canceledAt ?? null,
-      now,
-      now,
-    ]
-  );
-
-  return normalizeSubscriptionRow(res.rows[0]!);
-}
-
-export async function listUserSubscriptions(userId: string): Promise<SubscriptionRow[]> {
-  const db = await ensureDatabaseReady();
-  const res = await db.query(
-    'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 20',
-    [userId]
-  );
-  return res.rows.map(normalizeSubscriptionRow);
 }
 
 export interface ConversationRow {
@@ -1809,21 +1599,4 @@ export async function getUserDashboardStats(userId: string): Promise<{
     totalDocuments: Number(docRes.rows[0]?.c ?? 0),
     totalPublishedSites,
   };
-}
-
-export async function isStripeEventProcessed(eventId: string): Promise<boolean> {
-  const db = await ensureDatabaseReady();
-  const res = await db.query('SELECT id FROM stripe_events WHERE id = $1 LIMIT 1', [eventId]);
-  return res.rows.length > 0;
-}
-
-export async function markStripeEventProcessed(eventId: string, eventType: string): Promise<void> {
-  const db = await ensureDatabaseReady();
-  const now = new Date().toISOString();
-  await db.query(
-    `INSERT INTO stripe_events (id, event_type, processed_at)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (id) DO NOTHING`,
-    [eventId, eventType, now]
-  );
 }

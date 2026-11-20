@@ -132,21 +132,21 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
       <div className="w-full rounded-xl border border-[#232332] bg-[#111117] p-6 sm:p-8">
         <div className="mb-6 space-y-1.5">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-            Espace sécurisé NOVA AI PRO
+            Espace sécurisé NOVA AI (0 €)
           </p>
           <h1 className="font-display text-2xl font-bold text-[#FAFAFA]">
             {resetMode
               ? 'Réinitialiser le mot de passe'
               : isRegister
-              ? 'Créer un compte'
+              ? 'Créer un compte gratuit'
               : 'Connexion'}
           </h1>
           <p className="text-xs text-[#9E9EB5]">
             {resetMode
               ? 'Utilisez votre e-mail et le code de récupération remis lors de votre inscription.'
               : isRegister
-              ? 'Démarrez gratuitement sans limite artificielle de messages, avec historique et projets sauvegardés.'
-              : 'Retrouvez vos conversations, vos entreprises créées, vos documents et votre abonnement.'}
+              ? 'Accès 100 % gratuit (0 €) sans carte bancaire : 100 messages/jour, historique et projets sauvegardés.'
+              : 'Retrouvez vos conversations, vos entreprises créées, vos documents et vos quotas gratuits.'}
           </p>
         </div>
 
@@ -327,13 +327,13 @@ export function AuthPages({ mode, onNavigate, onAuthSuccess }: AuthPagesProps) {
             )}
           </div>
           <p className="text-[11px] leading-relaxed text-[#7D7D96]">
-            En utilisant NOVA AI PRO, vous acceptez nos{' '}
+            En utilisant NOVA AI, vous acceptez nos{' '}
             <button
               type="button"
               onClick={() => onNavigate('cgv')}
               className="text-[#9E9EB5] underline hover:text-white"
             >
-              CGV &amp; Remboursement
+              conditions du service gratuit (0 €)
             </button>
             , nos{' '}
             <button

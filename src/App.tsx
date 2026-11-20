@@ -4,7 +4,6 @@ import { AccueilPage } from './pages/AccueilPage';
 import { AssistantPage } from './pages/AssistantPage';
 import { AuthPages } from './pages/AuthPages';
 import { BusinessModePage } from './pages/BusinessModePage';
-import { PaymentFailurePage, PaymentSuccessPage } from './pages/CheckoutResultPages';
 import { DashboardPage } from './pages/DashboardPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { LegalPages } from './pages/LegalPages';
@@ -23,36 +22,25 @@ const VALID_VIEWS: PageView[] = [
   'dashboard',
   'historique',
   'profil',
-  'paiement-succes',
-  'paiement-echec',
   'confidentialite',
   'mentions-legales',
   'cgv',
 ];
 
-function getInitialViewFromUrl(): {
-  view: PageView;
-  checkoutStatus: string | null;
-  stripeSessionId: string | null;
-} {
+function getInitialViewFromUrl(): PageView {
   if (typeof window === 'undefined') {
-    return { view: 'accueil', checkoutStatus: null, stripeSessionId: null };
+    return 'accueil';
   }
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get('view') as PageView | null;
-  const checkoutStatus = params.get('checkout');
-  const stripeSessionId = params.get('session_id');
   if (rawView && VALID_VIEWS.includes(rawView)) {
-    return { view: rawView, checkoutStatus, stripeSessionId };
+    return rawView;
   }
-  return { view: 'accueil', checkoutStatus, stripeSessionId };
+  return 'accueil';
 }
 
 export function App() {
-  const initial = getInitialViewFromUrl();
-  const [activeView, setActiveView] = useState<PageView>(initial.view);
-  const [checkoutStatus] = useState<string | null>(initial.checkoutStatus);
-  const [stripeSessionId] = useState<string | null>(initial.stripeSessionId);
+  const [activeView, setActiveView] = useState<PageView>(getInitialViewFromUrl);
   const [user, setUser] = useState<PublicUser | null>(null);
   const [quota, setQuota] = useState<QuotaSnapshot | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -82,8 +70,6 @@ export function App() {
       } else {
         url.searchParams.set('view', view);
       }
-      url.searchParams.delete('checkout');
-      url.searchParams.delete('session_id');
       window.history.replaceState({}, '', url.toString());
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -148,23 +134,7 @@ export function App() {
           )}
 
           {activeView === 'tarifs' && (
-            <TarifsPage user={user} onNavigate={navigate} />
-          )}
-
-          {activeView === 'paiement-succes' && (
-            <PaymentSuccessPage
-              user={user}
-              sessionId={stripeSessionId}
-              onNavigate={navigate}
-              onVerified={(u, q) => {
-                setUser(u);
-                setQuota(q);
-              }}
-            />
-          )}
-
-          {activeView === 'paiement-echec' && (
-            <PaymentFailurePage user={user} onNavigate={navigate} />
+            <TarifsPage user={user} quota={quota} onNavigate={navigate} />
           )}
 
           {(activeView === 'connexion' || activeView === 'inscription') && (
@@ -182,7 +152,6 @@ export function App() {
           {activeView === 'dashboard' && (
             <DashboardPage
               user={user}
-              checkoutStatus={checkoutStatus}
               onNavigate={navigate}
               onOpenConversation={handleOpenConversation}
               onOpenBusinessProject={handleOpenBusinessProject}
@@ -231,8 +200,8 @@ export function App() {
         <footer className="border-t border-[#1C1C28] bg-[#08080B] py-8">
           <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-4 px-4 text-xs text-[#8888A0] sm:flex-row sm:items-center sm:px-6">
             <div className="flex flex-wrap items-center gap-3">
-              <span className="font-display text-sm font-bold text-[#FAFAFA]">NOVA AI PRO</span>
-              <span>Plateforme IA conversationnelle &amp; Suite Business complète</span>
+              <span className="font-display text-sm font-bold text-[#FAFAFA]">NOVA AI</span>
+              <span>Plateforme IA conversationnelle &amp; Suite Business — 100 % Gratuite (0 €)</span>
             </div>
             <div className="flex flex-wrap items-center gap-5">
               <button
@@ -254,7 +223,7 @@ export function App() {
                 onClick={() => navigate('tarifs')}
                 className="hover:text-white"
               >
-                Tarifs
+                Gratuit 0 € &amp; Limites
               </button>
               <button
                 type="button"
@@ -268,7 +237,7 @@ export function App() {
                 onClick={() => navigate('cgv')}
                 className="hover:text-white"
               >
-                CGV &amp; Remboursement
+                Conditions (0 €)
               </button>
               <button
                 type="button"

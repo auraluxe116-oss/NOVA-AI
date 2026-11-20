@@ -283,12 +283,12 @@ export function AssistantPage({
     e.target.value = '';
     if (!file) return;
 
-    const maxBytes = quota?.maxAttachmentBytes ?? 40 * 1024;
+    const maxBytes = quota?.maxAttachmentBytes ?? 512 * 1024;
     if (file.size > maxBytes) {
       setErrorBanner(
         `Le fichier "${file.name}" (${Math.ceil(file.size / 1024)} Ko) dépasse la limite autorisée (${Math.round(
           maxBytes / 1024
-        )} Ko) pour votre formule actuelle.`
+        )} Ko) en mode gratuit (0 €).`
       );
       return;
     }
@@ -675,28 +675,19 @@ export function AssistantPage({
         )}
       </div>
 
-      {/* Messagerie continue sans plafond artificiel */}
+      {/* Quotas gratuits 0 € */}
       {quota && (
         <div className="border-t border-[#1F1F2D] p-3.5 text-xs space-y-1.5">
           <div className="flex items-center justify-between text-[#B2B2C6]">
-            <span>Formule {quota.plan.toUpperCase()}</span>
+            <span>Mode Gratuit · 0 €</span>
             <span className="font-mono tabular-nums text-white">
-              {quota.chatUsedToday} msg aujourd&apos;hui
+              {quota.chatUsedToday} / {quota.dailyChatLimit} msg/j
             </span>
           </div>
           <p className="text-[11px] leading-snug text-[#8D8DA4]">
-            Aucun plafond interne de messages. Les limites externes éventuelles dépendent du
-            fournisseur IA.
+            Budget strict 0 € : si le quota journalier est atteint, aucun paiement n&apos;est
+            déclenché et le compteur redémarre demain.
           </p>
-          {quota.plan === 'free' && (
-            <button
-              type="button"
-              onClick={() => onNavigate('tarifs')}
-              className="mt-1 font-medium text-[#A78BFA] hover:text-white"
-            >
-              Découvrir PRO &amp; BUSINESS
-            </button>
-          )}
         </div>
       )}
     </>
@@ -758,7 +749,7 @@ export function AssistantPage({
               Nouveau
             </button>
             <h1 className="hidden sm:block truncate font-display text-sm font-semibold text-[#FAFAFA]">
-              Assistant NOVA AI PRO
+              Assistant NOVA AI
             </h1>
             {summarizedActive && (
               <span
@@ -822,6 +813,7 @@ export function AssistantPage({
             <button
               type="button"
               onClick={() => setUseWebSearch((prev) => !prev)}
+              title="Activer uniquement lorsque des données récentes ou des sources web sont nécessaires"
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                 useWebSearch
                   ? 'border-[#7C3AED] bg-[#7C3AED]/15 text-[#DDD6FE]'
@@ -829,7 +821,7 @@ export function AssistantPage({
               }`}
             >
               <Globe className="h-3.5 w-3.5" />
-              Web {useWebSearch ? 'activé' : 'auto'}
+              Web {useWebSearch ? 'activé' : 'désactivé'}
             </button>
           </div>
         </div>
@@ -1005,19 +997,36 @@ export function AssistantPage({
                 <div className="flex items-center gap-2">
                   {lastFailedRequest && (
                     <>
-                      <button
-                        type="button"
-                        disabled={isGenerating || retryCountdownSec > 0}
-                        onClick={() =>
-                          void sendMessage(lastFailedRequest.prompt, {
-                            isRetry: true,
-                            overrideAttachment: lastFailedRequest.attachment,
-                          })
-                        }
-                        className="rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
-                      >
-                        {retryCountdownSec > 0 ? `Réessayer (${retryCountdownSec}s)` : 'Réessayer'}
-                      </button>
+                      {(lastFailedRequest.errorCode === 'AI_QUOTA_EXHAUSTED' ||
+                        lastFailedRequest.errorCode === 'AI_RATE_LIMIT') &&
+                        selectedModel !== 'gemini-3.1-flash-lite' && (
+                          <button
+                            type="button"
+                            disabled={isGenerating}
+                            onClick={() => {
+                              setSelectedProvider('gemini');
+                              setSelectedModel('gemini-3.1-flash-lite');
+                            }}
+                            className="rounded border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-2.5 py-1 font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
+                          >
+                            Passer à Flash Lite (gratuit)
+                          </button>
+                        )}
+                      {lastFailedRequest.errorCode !== 'FREE_QUOTA_REACHED' && (
+                        <button
+                          type="button"
+                          disabled={isGenerating || retryCountdownSec > 0}
+                          onClick={() =>
+                            void sendMessage(lastFailedRequest.prompt, {
+                              isRetry: true,
+                              overrideAttachment: lastFailedRequest.attachment,
+                            })
+                          }
+                          className="rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                        >
+                          {retryCountdownSec > 0 ? `Réessayer (${retryCountdownSec}s)` : 'Réessayer'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         disabled={isGenerating}

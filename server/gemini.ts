@@ -36,7 +36,7 @@ function isFallbackHealthy(): boolean {
 function tripPrimaryCooldown(reason: unknown): void {
   primaryCooldownUntil = Date.now() + COOLDOWN_MS;
   console.warn(
-    `[NOVA AI PRO] Bascule temporaire depuis ${GEMINI_MODELS.primary} pendant 90s :`,
+    `[NOVA AI] Bascule temporaire depuis ${GEMINI_MODELS.primary} pendant 90s :`,
     reason instanceof Error ? reason.message : String(reason)
   );
 }
@@ -44,7 +44,7 @@ function tripPrimaryCooldown(reason: unknown): void {
 function tripFallbackCooldown(reason: unknown): void {
   fallbackCooldownUntil = Date.now() + COOLDOWN_MS;
   console.warn(
-    `[NOVA AI PRO] Modèle de secours indisponible temporairement pendant 90s :`,
+    `[NOVA AI] Modèle de secours indisponible temporairement pendant 90s :`,
     reason instanceof Error ? reason.message : String(reason)
   );
 }
@@ -94,75 +94,28 @@ export function getGeminiApiKey(): string | null {
 }
 
 export function getProviderApiKey(provider: AIProviderId): string | null {
-  switch (provider) {
-    case 'gemini':
-      return getGeminiApiKey();
-    case 'openai':
-      return cleanSecret(process.env.OPENAI_API_KEY, ['MY_OPENAI_API_KEY']);
-    case 'anthropic':
-      return cleanSecret(process.env.ANTHROPIC_API_KEY, ['MY_ANTHROPIC_API_KEY']);
-    case 'mistral':
-      return cleanSecret(process.env.MISTRAL_API_KEY, ['MY_MISTRAL_API_KEY']);
-    default:
-      return null;
+  if (provider === 'gemini') {
+    return getGeminiApiKey();
   }
+  return null;
 }
 
 export function getAvailableAIProviders(): AIProviderInfo[] {
   const geminiKey = Boolean(getGeminiApiKey());
-  const openaiKey = Boolean(getProviderApiKey('openai'));
-  const anthropicKey = Boolean(getProviderApiKey('anthropic'));
-  const mistralKey = Boolean(getProviderApiKey('mistral'));
 
   return [
     {
       id: 'gemini',
-      label: 'Google Gemini',
+      label: 'Google Gemini (Offre Gratuite 0 €)',
       configured: geminiKey,
       defaultModel: GEMINI_MODELS.primary,
       models: [
-        { id: GEMINI_MODELS.primary, label: 'Gemini 4 Hydrogen (Principal)' },
-        { id: GEMINI_MODELS.fallback, label: 'Gemini 3.1 Flash Lite (Rapide)' },
+        { id: GEMINI_MODELS.primary, label: 'Gemini 4 Hydrogen (Gratuit · Principal)' },
+        { id: GEMINI_MODELS.fallback, label: 'Gemini 3.1 Flash Lite (Gratuit · Rapide)' },
       ],
       note: geminiKey
-        ? 'Connecté (recherche web Google incluse).'
-        : 'Clé GEMINI_API_KEY requise dans Settings > Secrets.',
-    },
-    {
-      id: 'openai',
-      label: 'OpenAI',
-      configured: openaiKey,
-      defaultModel: 'gpt-4o-mini',
-      models: [
-        { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-        { id: 'gpt-4o', label: 'GPT-4o' },
-      ],
-      note: openaiKey
-        ? 'Connecté via OPENAI_API_KEY.'
-        : 'Non configuré (ajoutez OPENAI_API_KEY côté serveur pour activer).',
-    },
-    {
-      id: 'mistral',
-      label: 'Mistral AI',
-      configured: mistralKey,
-      defaultModel: 'mistral-small-latest',
-      models: [
-        { id: 'mistral-small-latest', label: 'Mistral Small' },
-        { id: 'mistral-large-latest', label: 'Mistral Large' },
-      ],
-      note: mistralKey
-        ? 'Connecté via MISTRAL_API_KEY.'
-        : 'Non configuré (ajoutez MISTRAL_API_KEY côté serveur pour activer).',
-    },
-    {
-      id: 'anthropic',
-      label: 'Anthropic Claude',
-      configured: anthropicKey,
-      defaultModel: 'claude-3-5-haiku-latest',
-      models: [{ id: 'claude-3-5-haiku-latest', label: 'Claude 3.5 Haiku' }],
-      note: anthropicKey
-        ? 'Connecté via ANTHROPIC_API_KEY.'
-        : 'Non configuré (ajoutez ANTHROPIC_API_KEY côté serveur pour activer).',
+        ? 'Actif en mode gratuit 0 € (aucune facturation ni carte bancaire).'
+        : 'Clé GEMINI_API_KEY requise dans Settings > Secrets (niveau gratuit Google AI Studio).',
     },
   ];
 }
@@ -404,8 +357,8 @@ export function mapGeminiErrorMessage(err: unknown): {
         code: 'AI_QUOTA_EXHAUSTED',
         retryAfterSec,
         message: retryAfterSec
-          ? `Quota de l'API Gemini épuisé pour le moment (HTTP 429 — délai indiqué : ${retryAfterSec}s). Patientez jusqu'au renouvellement du quota ou utilisez une clé/capacité API adaptée.`
-          : "Quota de l'API Gemini épuisé pour le moment (HTTP 429). Aucune relance en boucle n'est effectuée : patientez jusqu'au renouvellement du quota ou utilisez une clé/capacité API adaptée.",
+          ? `Limite du service gratuit IA atteinte pour le moment (HTTP 429 — délai : ${retryAfterSec}s). Aucun paiement ni facturation n'est déclenché : patientez avant de réessayer.`
+          : "Limite du service gratuit IA atteinte pour le moment (HTTP 429). Aucun paiement ni facturation n'est déclenché et aucune relance en boucle n'est effectuée : réessayez plus tard ou sélectionnez le modèle léger gemini-3.1-flash-lite.",
       };
     case 'rate_limit':
       return {
@@ -413,8 +366,8 @@ export function mapGeminiErrorMessage(err: unknown): {
         code: 'AI_RATE_LIMIT',
         retryAfterSec,
         message: retryAfterSec
-          ? `Limite temporaire de débit atteinte chez Gemini (HTTP 429). Patientez environ ${retryAfterSec} seconde(s) avant de cliquer sur Réessayer.`
-          : "Limite temporaire de débit atteinte chez le fournisseur IA (HTTP 429). Aucun blocage interne NOVA n'est actif : patientez quelques secondes puis cliquez sur Réessayer.",
+          ? `Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché : patientez environ ${retryAfterSec} seconde(s) avant de cliquer sur Réessayer.`
+          : "Limite temporaire de débit du service gratuit atteinte (HTTP 429). Aucun paiement ni facturation n'est déclenché : patientez quelques secondes puis cliquez sur Réessayer.",
       };
     case 'unavailable':
       return {
@@ -455,7 +408,7 @@ export function shouldAutoEnableWebSearch(prompt: string): boolean {
   );
 }
 
-const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI PRO, une intelligence artificielle professionnelle spécialisée dans le business, l'entrepreneuriat, la stratégie commerciale et la productivité.
+const GENERAL_SYSTEM_INSTRUCTION = `Tu es NOVA AI, une intelligence artificielle gratuite (0 €) spécialisée dans le business, l'entrepreneuriat, la stratégie commerciale et la productivité.
 
 DOMAINES D'EXPERTISE PRINCIPAUX :
 1. Création d'entreprise : choix de statut en France (micro-entreprise, EI, EURL, SASU, SAS), démarches guichet unique INPI, TVA/franchises et obligations légales.
@@ -1079,157 +1032,6 @@ export async function generateContentWithResilience<T>(params: {
   }
 }
 
-async function streamOpenAICompatibleProvider(params: {
-  endpoint: string;
-  apiKey: string;
-  model: string;
-  systemInstruction: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-  externalSignal?: AbortSignal;
-  callbacks: StreamCallbacks;
-  startedAt: number;
-}): Promise<StreamResult> {
-  params.callbacks.onModelSelected?.(params.model);
-  const res = await fetch(params.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${params.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: params.model,
-      stream: true,
-      messages: [
-        { role: 'system', content: params.systemInstruction },
-        ...params.messages.map((m) => ({ role: m.role, content: m.content })),
-      ],
-    }),
-    signal: params.externalSignal,
-  });
-
-  if (!res.ok || !res.body) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${errText}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  let fullText = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      try {
-        const json = JSON.parse(payload) as {
-          choices?: Array<{ delta?: { content?: string } }>;
-        };
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) {
-          fullText += delta;
-          params.callbacks.onDelta(delta);
-        }
-      } catch {
-        // ignore partial chunk
-      }
-    }
-  }
-
-  if (!fullText.trim()) {
-    throw new Error('EMPTY_MODEL_RESPONSE');
-  }
-
-  return {
-    fullText,
-    sources: [],
-    modelUsed: params.model,
-    latencyMs: Date.now() - params.startedAt,
-  };
-}
-
-async function streamAnthropicProvider(params: {
-  apiKey: string;
-  model: string;
-  systemInstruction: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-  externalSignal?: AbortSignal;
-  callbacks: StreamCallbacks;
-  startedAt: number;
-}): Promise<StreamResult> {
-  params.callbacks.onModelSelected?.(params.model);
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': params.apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: params.model,
-      max_tokens: 4096,
-      stream: true,
-      system: params.systemInstruction,
-      messages: params.messages.map((m) => ({ role: m.role, content: m.content })),
-    }),
-    signal: params.externalSignal,
-  });
-
-  if (!res.ok || !res.body) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${errText}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  let fullText = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload) continue;
-      try {
-        const json = JSON.parse(payload) as {
-          type?: string;
-          delta?: { type?: string; text?: string };
-        };
-        if (json.type === 'content_block_delta' && json.delta?.text) {
-          fullText += json.delta.text;
-          params.callbacks.onDelta(json.delta.text);
-        }
-      } catch {
-        // ignore partial chunk
-      }
-    }
-  }
-
-  if (!fullText.trim()) {
-    throw new Error('EMPTY_MODEL_RESPONSE');
-  }
-
-  return {
-    fullText,
-    sources: [],
-    modelUsed: params.model,
-    latencyMs: Date.now() - params.startedAt,
-  };
-}
-
 export async function streamConversationResponse(params: {
   history: ChatTurnInput[];
   contextSummary?: string;
@@ -1243,18 +1045,16 @@ export async function streamConversationResponse(params: {
   externalSignal?: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<StreamResult> {
-  const provider: AIProviderId = params.provider ?? 'gemini';
-  const apiKey = getProviderApiKey(provider);
+  const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error(
-      `Le fournisseur IA "${provider}" n'est pas configuré côté serveur. Configure sa clé API dans Settings > Secrets ou utilise Google Gemini.`
+      "Le moteur Gemini gratuit n'est pas configuré côté serveur (GEMINI_API_KEY manquante dans Settings > Secrets)."
     );
   }
 
   const startedAt = Date.now();
-  const enableSearch =
-    provider === 'gemini' &&
-    (params.useWebSearch || shouldAutoEnableWebSearch(params.userMessage));
+  // Recherche web strictement sur activation explicite pour préserver le quota gratuit 0 € et la latence
+  const enableSearch = Boolean(params.useWebSearch);
   const systemInstruction = buildAssistantSystemInstruction({
     contextSummary: params.contextSummary,
     experienceLevel: params.experienceLevel,
@@ -1264,50 +1064,6 @@ export async function streamConversationResponse(params: {
   const finalUserPrompt = params.attachment
     ? `[Document joint : ${params.attachment.name}]\n\nContenu du document :\n"""\n${params.attachment.content}\n"""\n\nDemande de l'utilisateur :\n${params.userMessage}`
     : params.userMessage;
-
-  const normalizedMessages = buildNormalizedChatMessages(
-    params.history,
-    finalUserPrompt,
-    12
-  );
-
-  if (provider === 'openai') {
-    return streamOpenAICompatibleProvider({
-      endpoint: 'https://api.openai.com/v1/chat/completions',
-      apiKey,
-      model: params.model || 'gpt-4o-mini',
-      systemInstruction,
-      messages: normalizedMessages,
-      externalSignal: params.externalSignal,
-      callbacks: params.callbacks,
-      startedAt,
-    });
-  }
-
-  if (provider === 'mistral') {
-    return streamOpenAICompatibleProvider({
-      endpoint: 'https://api.mistral.ai/v1/chat/completions',
-      apiKey,
-      model: params.model || 'mistral-small-latest',
-      systemInstruction,
-      messages: normalizedMessages,
-      externalSignal: params.externalSignal,
-      callbacks: params.callbacks,
-      startedAt,
-    });
-  }
-
-  if (provider === 'anthropic') {
-    return streamAnthropicProvider({
-      apiKey,
-      model: params.model || 'claude-3-5-haiku-latest',
-      systemInstruction,
-      messages: normalizedMessages,
-      externalSignal: params.externalSignal,
-      callbacks: params.callbacks,
-      startedAt,
-    });
-  }
 
   const ai = getClient(apiKey);
   const contents = buildNormalizedGeminiContents(params.history, finalUserPrompt, 12);
@@ -1413,7 +1169,7 @@ export async function streamBusinessProject(params: {
     ? `Recherche web activée : privilégie des sources officielles/fiables (Service-Public.fr, URSSAF, INSEE, Légifrance), cite les sources et signale les points non vérifiés.`
     : `Recherche web désactivée : ne prétends pas avoir effectué une recherche web en direct et signale les données volatiles à vérifier.`;
 
-  const systemInstruction = `Tu es NOVA AI PRO Mode Business, un consultant senior en création d'entreprise, agences IA, e-commerce, SaaS, marketing digital, automatisation, vente et finance d'entreprise.
+  const systemInstruction = `Tu es NOVA AI Mode Business, un consultant senior en création d'entreprise, agences IA, e-commerce, SaaS, marketing digital, automatisation, vente et finance d'entreprise.
 
 RÈGLES OBLIGATOIRES :
 1. Sois réaliste, concret, chiffré et honnête. Ne garantis JAMAIS de revenus ni de succès automatique.

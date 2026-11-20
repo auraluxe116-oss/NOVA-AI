@@ -297,47 +297,76 @@ export function BusinessModePage({
     };
   }, [suite?.logoSvg, logoBackdrop]);
 
-  const loadUserWorkspaceData = async () => {
-    if (!user) {
+  const loadedTabsRef = useRef<{
+    userId: string | null;
+    company: boolean;
+    modules: boolean;
+    documents: boolean;
+  }>({ userId: null, company: false, modules: false, documents: false });
+
+  useEffect(() => {
+    if (loadedTabsRef.current.userId !== (user?.id ?? null)) {
+      loadedTabsRef.current = {
+        userId: user?.id ?? null,
+        company: false,
+        modules: false,
+        documents: false,
+      };
       setSavedProjects([]);
       setSavedCreations([]);
       setPublishedSites([]);
       setSavedDocs([]);
-      return;
     }
-    try {
-      const [projRes, compRes, sitesRes, docsRes] = await Promise.all([
-        fetchBusinessProjects(),
-        fetchCompanyCreations(),
-        fetchPublishedSites(),
-        fetchDocuments(),
-      ]);
-      setSavedProjects(projRes.projects);
-      setSavedCreations(compRes.creations);
-      setPublishedSites(sitesRes.sites);
-      setSavedDocs(docsRes.documents);
+    if (!user) return;
 
-      if (initialProjectId) {
-        const match = projRes.projects.find((p) => p.id === initialProjectId);
-        if (match) {
-          setWorkspaceTab('modules');
-          setSelectedModule(match.module_key);
-          setTitle(match.title);
-          setSector(match.sector);
-          setBudgetEur(String(match.budget_eur));
-          setGoal(match.goal);
-          setStreamingContent(match.content_markdown);
+    const targetTab = initialProjectId ? 'modules' : workspaceTab;
+    let cancelled = false;
+
+    const loadActiveTabData = async () => {
+      try {
+        if (targetTab === 'company' && !loadedTabsRef.current.company) {
+          loadedTabsRef.current.company = true;
+          const [compRes, sitesRes] = await Promise.all([
+            fetchCompanyCreations(),
+            fetchPublishedSites(),
+          ]);
+          if (cancelled) return;
+          setSavedCreations(compRes.creations);
+          setPublishedSites(sitesRes.sites);
+        } else if (targetTab === 'modules' && (!loadedTabsRef.current.modules || initialProjectId)) {
+          loadedTabsRef.current.modules = true;
+          const projRes = await fetchBusinessProjects();
+          if (cancelled) return;
+          setSavedProjects(projRes.projects);
+          if (initialProjectId) {
+            const match = projRes.projects.find((p) => p.id === initialProjectId);
+            if (match) {
+              setWorkspaceTab('modules');
+              setSelectedModule(match.module_key);
+              setTitle(match.title);
+              setSector(match.sector);
+              setBudgetEur(String(match.budget_eur));
+              setGoal(match.goal);
+              setStreamingContent(match.content_markdown);
+            }
+            onClearInitialProject?.();
+          }
+        } else if (targetTab === 'documents' && !loadedTabsRef.current.documents) {
+          loadedTabsRef.current.documents = true;
+          const docsRes = await fetchDocuments();
+          if (cancelled) return;
+          setSavedDocs(docsRes.documents);
         }
-        onClearInitialProject?.();
+      } catch {
+        // ignore non-blocking fetch errors
       }
-    } catch {
-      // ignore non-blocking fetch errors
-    }
-  };
+    };
 
-  useEffect(() => {
-    void loadUserWorkspaceData();
-  }, [user?.id, initialProjectId]);
+    void loadActiveTabData();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, workspaceTab, initialProjectId]);
 
   const moduleMeta =
     BUSINESS_MODULES.find((m) => m.key === selectedModule) ?? BUSINESS_MODULES[0];
@@ -692,7 +721,7 @@ export function BusinessModePage({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#1F1F2D] pb-5">
         <div className="space-y-1.5">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-            Suite Entrepreneuriale Complète · NOVA AI PRO
+            Suite Entrepreneuriale 100 % Gratuite (0 €) · NOVA AI
           </p>
           <h1 className="font-display text-3xl font-bold text-[#FAFAFA]">
             Studio Business, Création d&apos;Entreprise &amp; Médias
@@ -700,7 +729,7 @@ export function BusinessModePage({
           <p className="max-w-3xl text-sm text-[#A8A8BE]">
             Générez des actifs réels exploitables immédiatement : Logo PNG haute définition, Site
             web publié en ligne, Identité de marque, Offre commerciale, Business Plan, Contenu,
-            Vidéo WebM et Documents PDF.
+            Vidéo WebM locale et Documents PDF — sans abonnement ni facturation.
           </p>
         </div>
 
@@ -708,9 +737,9 @@ export function BusinessModePage({
           <div className="rounded-lg border border-[#232332] bg-[#111117] px-4 py-2.5 text-xs">
             <span className="text-[#9E9EB5]">Générations du jour : </span>
             <span className="font-mono font-semibold tabular-nums text-white">
-              {quota.businessUsedToday}
+              {quota.businessUsedToday} / {quota.dailyBusinessLimit}
             </span>
-            <span className="ml-1.5 text-[#3B82F6]">· Sans plafond interne</span>
+            <span className="ml-1.5 text-emerald-400">· Gratuit 0 €</span>
           </div>
         )}
       </div>
@@ -2108,7 +2137,7 @@ export function BusinessModePage({
                           exportMarkdownToPdf(
                             title || moduleMeta.label,
                             streamingContent,
-                            `${moduleMeta.label} · ${sector || 'NOVA AI PRO'}`
+                            `${moduleMeta.label} · ${sector || 'NOVA AI'}`
                           )
                         }
                         className="inline-flex items-center gap-1 rounded-lg bg-[#3B82F6] px-2.5 py-1.5 text-xs font-semibold text-white"
@@ -2318,7 +2347,7 @@ export function BusinessModePage({
                     type="button"
                     onClick={() =>
                       exportMarkdownToPdf(
-                        contentTopic || 'Contenu NOVA AI PRO',
+                        contentTopic || 'Contenu NOVA AI',
                         contentOutput,
                         CONTENT_FORMATS.find((f) => f.key === contentFormat)?.label
                       )
@@ -2429,7 +2458,7 @@ export function BusinessModePage({
                 rows={2}
                 value={videoSourceScript}
                 onChange={(e) => setVideoSourceScript(e.target.value)}
-                placeholder="Collez un script ou laissez NOVA AI PRO structurer les scènes, plans, voix off et sous-titres..."
+                placeholder="Collez un script ou laissez NOVA AI structurer les scènes, plans, voix off et sous-titres..."
                 className="w-full rounded-lg border border-[#262638] bg-[#0B0B10] px-3 py-2 text-xs text-white"
               />
             </div>
@@ -2632,7 +2661,7 @@ export function BusinessModePage({
                       exportMarkdownToPdf(
                         genDocTitle || genDocType,
                         genDocMarkdown,
-                        `${genDocType} · NOVA AI PRO`
+                        `${genDocType} · NOVA AI`
                       )
                     }
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[#3B82F6] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2563EB]"

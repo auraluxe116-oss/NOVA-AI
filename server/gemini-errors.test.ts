@@ -143,7 +143,7 @@ test('classifyGeminiError et mapGeminiErrorMessage distinguent 429 temporaire, 4
   assert.equal(classifyGeminiError(quota429).category, 'quota_exhausted');
   assert.equal(mappedQuota429.status, 429);
   assert.equal(mappedQuota429.code, 'AI_QUOTA_EXHAUSTED');
-  assert.match(mappedQuota429.message, /renouvellement du quota|capacité API adaptée/i);
+  assert.match(mappedQuota429.message, /service gratuit IA atteinte.*Aucun paiement ni facturation/i);
 
   const err503 = makeHttpError(503, 'The model is overloaded. Service unavailable.', {
     'Retry-After': '3',
@@ -541,7 +541,7 @@ test('routes HTTP (/api/chat SSE & /api/business/company-suite JSON) exposent cl
   assert.ok(evQuota);
   assert.equal(evQuota.status, 429);
   assert.equal(evQuota.code, 'AI_QUOTA_EXHAUSTED');
-  assert.match(String(evQuota.error), /renouvellement du quota|capacité API adaptée/i);
+  assert.match(String(evQuota.error), /service gratuit IA atteinte.*Aucun paiement ni facturation/i);
 
   // 3. /api/chat SSE -> 503 surchargé
   nextChatError = makeHttpError(503, 'High demand on Gemini', { 'Retry-After': '4' });

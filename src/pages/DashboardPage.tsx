@@ -2,12 +2,12 @@ import {
   ArrowRight,
   Briefcase,
   Building2,
-  CreditCard,
   ExternalLink,
   FileText,
   History,
   MessageSquare,
   Settings,
+  ShieldCheck,
   UserCheck,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -16,7 +16,6 @@ import { fetchDashboard } from '../utils/api';
 
 interface DashboardPageProps {
   user: PublicUser | null;
-  checkoutStatus?: string | null;
   onNavigate: (view: PageView) => void;
   onOpenConversation: (conversationId: string) => void;
   onOpenBusinessProject?: (projectId: string) => void;
@@ -24,7 +23,6 @@ interface DashboardPageProps {
 
 export function DashboardPage({
   user,
-  checkoutStatus,
   onNavigate,
   onOpenConversation,
   onOpenBusinessProject,
@@ -75,7 +73,7 @@ export function DashboardPage({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#1F1F2D] pb-6">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-            Espace Utilisateur · NOVA AI PRO
+            Espace Utilisateur · NOVA AI (0 €)
           </p>
           <h1 className="mt-1 font-display text-3xl font-bold text-[#FAFAFA]">
             Bonjour, {user.displayName}
@@ -112,29 +110,6 @@ export function DashboardPage({
         </div>
       </div>
 
-      {checkoutStatus === 'success' && (
-        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-          Paiement confirmé par Stripe. Si votre formule ne reflète pas encore la mise à jour,
-          rafraîchissez dans quelques secondes le temps du traitement webhook.
-        </div>
-      )}
-
-      {user.subscriptionStatus === 'past_due' && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
-          <span>
-            Votre paiement Stripe est en attente ou a échoué : les avantages PRO/BUSINESS sont
-            temporairement suspendus.
-          </span>
-          <button
-            type="button"
-            onClick={() => onNavigate('profil')}
-            className="rounded-md bg-amber-500 px-3 py-1.5 font-semibold text-black"
-          >
-            Régulariser dans Profil
-          </button>
-        </div>
-      )}
-
       {error && (
         <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
           {error}
@@ -156,22 +131,12 @@ export function DashboardPage({
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5 flex flex-col justify-between">
               <div>
-                <p className="text-xs text-[#9E9EB5]">Abonnement &amp; Statut</p>
+                <p className="text-xs text-[#9E9EB5]">Mode économique</p>
                 <p className="mt-2 font-display text-2xl font-bold text-white uppercase">
-                  {data.user.effectivePlan === 'free'
-                    ? 'GRATUIT'
-                    : data.user.effectivePlan.toUpperCase()}
+                  GRATUIT · 0 €
                 </p>
-                <p className="mt-1 text-xs text-[#93C5FD]">
-                  {data.user.subscriptionStatus === 'active'
-                    ? data.user.cancelAtPeriodEnd
-                      ? 'Actif (résiliation programmée)'
-                      : 'Actif (vérifié Stripe)'
-                    : data.user.subscriptionStatus === 'past_due'
-                    ? 'Paiement en retard'
-                    : data.user.subscriptionStatus === 'canceled'
-                    ? 'Résilié · Accès Gratuit'
-                    : 'Offre Gratuite'}
+                <p className="mt-1 text-xs text-emerald-400">
+                  Aucune carte bancaire · Sans facturation
                 </p>
               </div>
               <div className="mt-3 flex flex-wrap gap-3 text-xs">
@@ -180,7 +145,7 @@ export function DashboardPage({
                   onClick={() => onNavigate('profil')}
                   className="inline-flex items-center gap-1 font-medium text-[#C4B5FD] hover:text-white"
                 >
-                  Gérer
+                  Paramètres
                   <ArrowRight className="h-3 w-3" />
                 </button>
                 <button
@@ -188,23 +153,22 @@ export function DashboardPage({
                   onClick={() => onNavigate('tarifs')}
                   className="text-[#9E9EB5] hover:text-white"
                 >
-                  Formules
+                  Quotas 0 €
                 </button>
               </div>
             </div>
 
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
-              <p className="text-xs text-[#9E9EB5]">Messages envoyés</p>
+              <p className="text-xs text-[#9E9EB5]">Messages Assistant IA (jour)</p>
               <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
-                {data.stats.messagesToday}{' '}
-                <span className="text-xs font-normal text-[#8D8DA4]">aujourd&apos;hui</span>
+                {data.quota.chatUsedToday} / {data.quota.dailyChatLimit}
               </p>
               <p className="mt-1 text-xs text-[#8D8DA4]">
                 Total cumulé :{' '}
                 <span className="font-mono tabular-nums text-[#D4D4E6]">
                   {data.stats.totalMessages}
                 </span>{' '}
-                · Sans plafond NOVA
+                · {data.quota.dailyChatRemaining} restants aujourd&apos;hui
               </p>
             </div>
 
@@ -227,16 +191,14 @@ export function DashboardPage({
             </div>
 
             <div className="rounded-xl border border-[#232332] bg-[#111117] p-5">
-              <p className="text-xs text-[#9E9EB5]">Capacités de la formule</p>
+              <p className="text-xs text-[#9E9EB5]">Quotas Studio &amp; Sites (0 €)</p>
               <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-white">
-                {data.quota.maxPublishedSites === null
-                  ? 'Illimité'
-                  : `${data.stats.totalPublishedSites}/${data.quota.maxPublishedSites}`}{' '}
-                <span className="text-xs font-normal text-[#8D8DA4]">sites</span>
+                {data.quota.businessUsedToday}/{data.quota.dailyBusinessLimit}{' '}
+                <span className="text-xs font-normal text-[#8D8DA4]">studio/j</span>
               </p>
               <p className="mt-1 text-xs text-[#8D8DA4]">
-                Pièces jointes max : {Math.round(data.quota.maxAttachmentBytes / 1024)} Ko ·{' '}
-                {data.stats.totalDocuments} docs PDF
+                Sites publiés : {data.stats.totalPublishedSites}/{data.quota.maxPublishedSites} · PJ max{' '}
+                {Math.round(data.quota.maxAttachmentBytes / 1024)} Ko · {data.stats.totalDocuments} docs PDF
               </p>
             </div>
           </div>
@@ -423,21 +385,21 @@ export function DashboardPage({
                 )}
               </div>
 
-              {data.user.effectivePlan === 'free' && (
-                <div className="flex items-center justify-between gap-3 rounded-lg border border-[#3B2B68] bg-[#161226] p-3.5 text-xs">
-                  <div className="flex items-center gap-2 text-[#E0D6FF]">
-                    <CreditCard className="h-4 w-4 text-[#A78BFA]" />
-                    <span>Passez à PRO ou BUSINESS pour plus de sites publiés et pièces jointes.</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('tarifs')}
-                    className="rounded-md bg-[#7C3AED] px-3 py-1.5 font-semibold text-white whitespace-nowrap shrink-0"
-                  >
-                    Voir les tarifs
-                  </button>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs">
+                <div className="flex items-center gap-2 text-emerald-100">
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-400" />
+                  <span>
+                    Plateforme 100 % gratuite (0 €) — Aucune carte bancaire · Aucune facturation.
+                  </span>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => onNavigate('tarifs')}
+                  className="rounded-md border border-emerald-400/40 bg-[#121916] px-3 py-1.5 font-semibold text-white whitespace-nowrap shrink-0 hover:border-emerald-300"
+                >
+                  Voir les quotas
+                </button>
+              </div>
             </section>
           </div>
         </>

@@ -34,7 +34,7 @@ export function exportMarkdownToPdf(title: string, markdownContent: string, subt
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
   doc.setTextColor(20, 20, 35);
-  const titleLines = doc.splitTextToSize(title || 'Document NOVA AI PRO', maxWidth);
+  const titleLines = doc.splitTextToSize(title || 'Document NOVA AI', maxWidth);
   doc.text(titleLines, margin, y);
   y += titleLines.length * 22 + 4;
 
@@ -275,6 +275,6 @@ export function exportCompanySuiteToPdf(suite: CompanyCreationResult): void {
   exportMarkdownToPdf(
     `Dossier Entreprise — ${b.brandName}`,
     md,
-    `Généré par NOVA AI PRO · ${new Date().toLocaleDateString('fr-FR')}`
+    `Généré par NOVA AI · ${new Date().toLocaleDateString('fr-FR')}`
   );
 }

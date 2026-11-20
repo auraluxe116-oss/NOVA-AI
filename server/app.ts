@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 import 'dotenv/config';
 import express from 'express';
-import type Stripe from 'stripe';
 import {
   checkRateLimit,
   clearSessionCookie,
@@ -44,7 +43,6 @@ import {
   listUserConversations,
   listUserDocuments,
   listUserPublishedSites,
-  listUserSubscriptions,
   publishSite,
   recordUsage,
   renameConversation,
@@ -72,29 +70,30 @@ import {
   summarizeConversationHistory,
 } from './gemini.js';
 import {
-  createBillingPortalForUser,
-  createCheckoutSessionForUser,
-  getResolvedStripeConfigStatus,
-  getStripeConfigStatus,
-  listStripeInvoicesForUser,
-  processStripeWebhook,
-  resolveAppBaseUrl,
-  setSubscriptionCancellation,
-  verifyCheckoutSessionForUser,
-} from './stripe.js';
-import {
   PLAN_SPECS,
   resolveEffectivePlan,
-  type AIProviderId,
-  type BillingInterval,
   type ExperienceLevel,
-  type PlanTier,
   type PublicUser,
 } from './types.js';
 
+function resolveAppBaseUrl(requestOrigin?: string): string {
+  const envUrl = process.env.APP_URL?.trim();
+  if (envUrl && envUrl !== 'MY_APP_URL') {
+    return envUrl.replace(/\/+$/, '');
+  }
+  if (process.env.VERCEL_URL?.trim()) {
+    return `https://${process.env.VERCEL_URL.trim().replace(/^https?:\/\//, '')}`;
+  }
+  if (requestOrigin && /^https?:\/\//i.test(requestOrigin)) {
+    return requestOrigin.replace(/\/+$/, '');
+  }
+  return 'http://localhost:3000';
+}
+
 async function buildQuotaSnapshot(user: PublicUser | null, ipHash: string) {
-  const plan: PlanTier = user ? resolveEffectivePlan(user) : 'free';
+  const plan = resolveEffectivePlan();
   const spec = PLAN_SPECS[plan];
+  const isAuthenticated = Boolean(user);
 
   const [chatUsedToday, businessUsedToday] = await Promise.all([
     getDailyUsageCount({
@@ -109,17 +108,50 @@ async function buildQuotaSnapshot(user: PublicUser | null, ipHash: string) {
     }),
   ]);
 
+  const dailyChatLimit = isAuthenticated ? spec.dailyChatLimitUser : spec.dailyChatLimitGuest;
+  const dailyBusinessLimit = isAuthenticated
+    ? spec.dailyBusinessLimitUser
+    : spec.dailyBusinessLimitGuest;
+
   return {
     plan,
-    isAuthenticated: Boolean(user),
-    unlimitedInAppMessages: true,
+    zeroCostMode: true as const,
+    isAuthenticated,
     chatUsedToday,
     businessUsedToday,
+    dailyChatLimit,
+    dailyBusinessLimit,
+    dailyChatRemaining: Math.max(0, dailyChatLimit - chatUsedToday),
+    dailyBusinessRemaining: Math.max(0, dailyBusinessLimit - businessUsedToday),
     maxAttachmentBytes: spec.maxAttachmentBytes,
     maxPublishedSites: spec.maxPublishedSites,
     exportEnabled: spec.exportEnabled,
     fullBusinessSuite: spec.fullBusinessSuite,
     companyCreationSuite: spec.companyCreationSuite,
+  };
+}
+
+type QuotaSnapshotData = Awaited<ReturnType<typeof buildQuotaSnapshot>>;
+
+function buildFreeQuotaExceededPayload(
+  kind: 'chat' | 'business',
+  quota: QuotaSnapshotData
+): { code: string; error: string } {
+  if (kind === 'chat') {
+    const guestHint = quota.isAuthenticated
+      ? 'Le compteur gratuit se réinitialise automatiquement demain.'
+      : `Crée un compte gratuit (0 €, sans carte bancaire) pour passer à ${PLAN_SPECS.free.dailyChatLimitUser} messages/jour, ou reviens demain.`;
+    return {
+      code: 'FREE_QUOTA_REACHED',
+      error: `Limite journalière gratuite atteinte (${quota.chatUsedToday}/${quota.dailyChatLimit} messages aujourd'hui). Aucun paiement ni facturation n'est déclenché. ${guestHint}`,
+    };
+  }
+  const guestHint = quota.isAuthenticated
+    ? 'Le compteur gratuit se réinitialise automatiquement demain.'
+    : `Crée un compte gratuit (0 €, sans carte bancaire) pour passer à ${PLAN_SPECS.free.dailyBusinessLimitUser} générations/jour, ou reviens demain.`;
+  return {
+    code: 'FREE_QUOTA_REACHED',
+    error: `Limite journalière gratuite du studio atteinte (${quota.businessUsedToday}/${quota.dailyBusinessLimit} générations aujourd'hui). Aucun paiement ni facturation n'est déclenché. ${guestHint}`,
   };
 }
 
@@ -162,7 +194,6 @@ export interface CreateAppOptions {
   summarizeHistory?: typeof summarizeConversationHistory;
   providerKeyChecker?: typeof getProviderApiKey;
   generateCompanySuite?: typeof generateCompanyCreationSuite;
-  stripeClient?: Stripe;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Express {
@@ -187,10 +218,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     next();
   });
 
-  // CSRF defense-in-depth: validate browser Origin header on mutating API routes (excluding Stripe webhook)
+  // CSRF defense-in-depth: validate browser Origin header on mutating API routes
   app.use('/api', (req, res, next) => {
     if (
-      req.path === '/stripe/webhook' ||
       req.method === 'GET' ||
       req.method === 'HEAD' ||
       req.method === 'OPTIONS'
@@ -231,27 +261,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     });
   });
 
-  // 1. Stripe Webhook MUST receive raw Buffer BEFORE express.json()
-  app.post(
-    '/api/stripe/webhook',
-    express.raw({ type: 'application/json', limit: '2mb' }),
-    async (req, res) => {
-      try {
-        const sigHeader = req.headers['stripe-signature'];
-        const signature = Array.isArray(sigHeader) ? sigHeader[0] : sigHeader;
-        if (!Buffer.isBuffer(req.body)) {
-          res.status(400).json({ error: 'Corps brut Webhook Stripe requis.' });
-          return;
-        }
-        const result = await processStripeWebhook(req.body, signature, options.stripeClient);
-        res.json(result);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Erreur Webhook Stripe.';
-        res.status(400).json({ error: message });
-      }
-    }
-  );
-
   app.use(express.json({ limit: '4mb' }));
 
   // Public Published Website Hosting (/sites/:slug)
@@ -280,19 +289,18 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     '/api/health',
     asyncRoute(async (_req, res) => {
       const aiConfigured = Boolean(getGeminiApiKey());
-      const stripe = getStripeConfigStatus();
       const dbHealth = await checkDatabaseHealth();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.status(dbHealth.connected ? 200 : 503).json({
         ok: dbHealth.connected,
-        brand: 'NOVA AI PRO',
+        status: dbHealth.connected ? 'ok' : 'degraded',
+        brand: 'NOVA AI',
+        budgetMode: 'strict-0-eur',
+        zeroCostMode: true,
+        paidServicesDisabled: true,
         runtime: process.env.VERCEL === '1' ? 'vercel-serverless' : 'node-server',
         aiConfigured,
         sessionSecretConfigured: isExplicitSessionSecretConfigured(),
-        stripeConfigured: stripe.stripeConfigured,
-        stripeMode: stripe.stripeMode,
-        webhookConfigured: stripe.webhookConfigured,
-        checkoutReady: stripe.checkoutReady,
         database: {
           configured: dbHealth.configured,
           connected: dbHealth.connected,
@@ -304,7 +312,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         },
         storage: {
           engine: 'postgresql',
-          ephemeral: false,
+          ephemeral: dbHealth.ephemeral,
         },
         models: GEMINI_MODELS,
       });
@@ -312,6 +320,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   );
 
   app.get('/api/ai/providers', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=300');
     res.json({ providers: getAvailableAIProviders() });
   });
 
@@ -604,14 +613,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
                 ? 'debutant'
                 : undefined,
             preferredProvider:
-              rawPreferences.preferredProvider === 'openai' ||
-              rawPreferences.preferredProvider === 'anthropic' ||
-              rawPreferences.preferredProvider === 'mistral' ||
-              rawPreferences.preferredProvider === 'gemini'
-                ? rawPreferences.preferredProvider
-                : undefined,
+              rawPreferences.preferredProvider === 'gemini' ? 'gemini' : undefined,
             preferredModel:
-              typeof rawPreferences.preferredModel === 'string'
+              rawPreferences.preferredModel === 'gemini-4-hydrogen' ||
+              rawPreferences.preferredModel === 'gemini-3.1-flash-lite'
                 ? rawPreferences.preferredModel
                 : undefined,
             autoWebSearch:
@@ -656,7 +661,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.setHeader(
         'Content-Disposition',
-        'attachment; filename="nova-ai-pro-mes-donnees.json"'
+        'attachment; filename="nova-ai-mes-donnees.json"'
       );
       res.json(payload);
     })
@@ -694,7 +699,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
       const ipHash = hashIp(getClientIp(req));
-      const effectivePlan = resolveEffectivePlan(user);
+      const effectivePlan = resolveEffectivePlan();
       const [
         stats,
         quota,
@@ -703,7 +708,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         allCreations,
         allSites,
         allDocs,
-        subscriptions,
       ] = await Promise.all([
         getUserDashboardStats(user.id),
         buildQuotaSnapshot(user, ipHash),
@@ -712,7 +716,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         listCompanyCreations(user.id),
         listUserPublishedSites(user.id),
         listUserDocuments(user.id),
-        listUserSubscriptions(user.id),
       ]);
 
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -726,7 +729,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         recentCompanyCreations: allCreations.slice(0, 5),
         publishedSites: allSites.slice(0, 8),
         recentDocuments: allDocs.slice(0, 6),
-        subscriptions,
       });
     })
   );
@@ -820,25 +822,25 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     })
   );
 
-  // 6. Real-Time SSE Streaming Chat Assistant (No Artificial Daily/Monthly Caps!)
+  // 6. Real-Time SSE Streaming Chat Assistant (Strict 0 EUR Free Tier)
   app.post('/api/chat', async (req, res, next) => {
-    const rawProvider = String(req.body?.provider ?? 'gemini').trim() as AIProviderId;
-    const provider: AIProviderId =
-      rawProvider === 'openai' ||
-      rawProvider === 'anthropic' ||
-      rawProvider === 'mistral'
-        ? rawProvider
-        : 'gemini';
+    const rawProvider = String(req.body?.provider ?? 'gemini').trim();
+    if (rawProvider && rawProvider !== 'gemini') {
+      res.status(400).json({
+        code: 'PAID_PROVIDER_DISABLED',
+        error:
+          'Seuls les modèles gratuits Google Gemini (budget strict 0 €) sont disponibles sur cette plateforme.',
+      });
+      return;
+    }
     const requestedModel =
       typeof req.body?.model === 'string' ? req.body.model.trim() : undefined;
 
-    if (!resolveProviderKey(provider)) {
+    if (!resolveProviderKey('gemini')) {
       res.status(503).json({
         code: 'AI_NOT_CONFIGURED',
         error:
-          provider === 'gemini'
-            ? 'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoute-la dans Settings > Secrets.'
-            : `Fournisseur ${provider} non configuré côté serveur (clé API manquante).`,
+          'Clé API Gemini manquante côté serveur (GEMINI_API_KEY). Ajoute-la dans Settings > Secrets (niveau gratuit Google AI Studio).',
       });
       return;
     }
@@ -864,10 +866,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     try {
       user = await getAuthenticatedPublicUser(req);
 
-      // Anti-abuse burst flood protection ONLY (never blocks legitimate total message counts)
       const burst = checkRateLimit(
         `chat:burst:${user ? user.id : ipHash}`,
-        45,
+        25,
         60_000
       );
       if (!burst.allowed) {
@@ -875,12 +876,16 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(429).json({
           code: 'BURST_LIMIT',
           retryAfterSec: burst.retryAfterSec,
-          error: `Cadence de requêtes trop rapide (anti-flood). Patientez ${burst.retryAfterSec} seconde(s).`,
+          error: `Cadence de requêtes trop rapide pour le service gratuit. Aucune facturation déclenchée : patientez ${burst.retryAfterSec} seconde(s).`,
         });
         return;
       }
 
       const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.chatUsedToday >= quota.dailyChatLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('chat', quota));
+        return;
+      }
 
       if (req.body?.attachment && typeof req.body.attachment === 'object') {
         const attName = String(req.body.attachment.name ?? 'document.txt').trim().slice(0, 120);
@@ -888,7 +893,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         if (attContent.length > quota.maxAttachmentBytes) {
           res.status(413).json({
             code: 'ATTACHMENT_TOO_LARGE',
-            error: `Le document joint dépasse la limite de ta formule (${Math.round(
+            error: `Le document joint dépasse la limite gratuite (${Math.round(
               quota.maxAttachmentBytes / 1024
             )} Ko).`,
           });
@@ -965,10 +970,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             });
           }
 
-          // Smart context summarization for long conversations (> 14 messages)
+          // Summarize only very long histories (> 24 messages) to save free API calls
           const summarizedCount = existing.summarized_message_count ?? 0;
-          if (historyForModel.length > 14 && historyForModel.length - 10 > summarizedCount + 3) {
-            const olderSlice = historyForModel.slice(summarizedCount, historyForModel.length - 10);
+          if (historyForModel.length > 24 && historyForModel.length - 12 > summarizedCount + 6) {
+            const olderSlice = historyForModel.slice(summarizedCount, historyForModel.length - 12);
             const updatedSummary = await runSummarizeHistory({
               existingSummary: contextSummary,
               turnsToSummarize: olderSlice,
@@ -978,7 +983,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
               await updateConversationSummary(
                 existing.id,
                 updatedSummary,
-                historyForModel.length - 10
+                historyForModel.length - 12
               );
             }
           }
@@ -1006,8 +1011,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
               (item as { role?: string }).role === 'assistant') &&
             typeof (item as { content?: unknown }).content === 'string'
         );
-        if (guestAll.length > 14) {
-          const olderGuest = guestAll.slice(0, guestAll.length - 10);
+        if (guestAll.length > 24) {
+          const olderGuest = guestAll.slice(0, guestAll.length - 12);
           const guestSummary = await runSummarizeHistory({
             existingSummary: '',
             turnsToSummarize: olderGuest,
@@ -1059,9 +1064,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         attachment,
         useWebSearch,
         experienceLevel,
-        provider,
+        provider: 'gemini',
         model: requestedModel,
-        plan: user ? resolveEffectivePlan(user) : 'free',
+        plan: resolveEffectivePlan(),
         externalSignal: abortController.signal,
         callbacks: {
           onStatus: (label) => {
@@ -1204,7 +1209,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       user = await getAuthenticatedPublicUser(req);
       const burst = checkRateLimit(
         `biz:burst:${user ? user.id : ipHash}`,
-        25,
+        20,
         60_000
       );
       if (!burst.allowed) {
@@ -1212,8 +1217,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(429).json({
           code: 'BURST_LIMIT',
           retryAfterSec: burst.retryAfterSec,
-          error: `Cadence élevée. Patientez ${burst.retryAfterSec} seconde(s).`,
+          error: `Cadence élevée pour le service gratuit. Patientez ${burst.retryAfterSec} seconde(s).`,
         });
+        return;
+      }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
         return;
       }
     } catch (err) {
@@ -1373,6 +1383,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
+        return;
+      }
 
       const projectTitle = String(req.body?.title ?? '').trim();
       const sector = String(req.body?.sector ?? '').trim();
@@ -1467,6 +1482,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
+        return;
+      }
 
       const brandName = String(req.body?.brandName ?? '').trim();
       const sector = String(req.body?.sector ?? '').trim();
@@ -1494,6 +1514,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
 
+      await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
       if (user && creationId) {
         await updateCompanyCreationAssets(creationId, user.id, { logoSvg: logoResult.logoSvg });
       }
@@ -1521,6 +1542,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           retryAfterSec: burst.retryAfterSec,
           error: `Patiente ${burst.retryAfterSec} secondes.`,
         });
+        return;
+      }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
         return;
       }
 
@@ -1558,6 +1584,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
 
+      await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
       if (user && creationId) {
         await updateCompanyCreationAssets(creationId, user.id, {
           websiteHtml: websiteResult.websiteHtml,
@@ -1599,12 +1626,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         user && existingSlug ? await findUserPublishedSiteBySlug(existingSlug, user.id) : null;
 
       if (user && !ownedExistingSite) {
-        const plan = resolveEffectivePlan(user);
+        const plan = resolveEffectivePlan();
         const maxSites = PLAN_SPECS[plan].maxPublishedSites;
-        if (maxSites !== null && (await countUserPublishedSites(user.id)) >= maxSites) {
+        if ((await countUserPublishedSites(user.id)) >= maxSites) {
           res.status(403).json({
             code: 'SITES_LIMIT_REACHED',
-            error: `Votre formule ${plan.toUpperCase()} permet jusqu'à ${maxSites} sites publiés simultanément. Supprimez-en un ou passez à une formule supérieure.`,
+            error: `Limite gratuite atteinte (${maxSites} sites publiés simultanément). Supprimez un site existant pour en publier un nouveau — aucun paiement n'est demandé.`,
           });
           return;
         }
@@ -1691,6 +1718,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
+        return;
+      }
 
       const formatKey = String(req.body?.formatKey ?? 'tiktok_script').trim();
       const topic = String(req.body?.topic ?? '').trim();
@@ -1711,6 +1743,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           tone,
           callToAction,
         });
+        await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
         sendMappedGeminiJsonError(res, err);
@@ -1741,6 +1774,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
+        return;
+      }
 
       const topic = String(req.body?.topic ?? '').trim();
       const format = req.body?.format === '16:9' ? '16:9' : '9:16';
@@ -1764,6 +1802,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           durationTargetSec: Number.isFinite(durationTargetSec) ? durationTargetSec : 25,
           sourceScript,
         });
+        await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
         sendMappedGeminiJsonError(res, err);
@@ -1849,6 +1888,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         });
         return;
       }
+      const quota = await buildQuotaSnapshot(user, ipHash);
+      if (quota.businessUsedToday >= quota.dailyBusinessLimit) {
+        res.status(429).json(buildFreeQuotaExceededPayload('business', quota));
+        return;
+      }
 
       const docType = String(req.body?.docType ?? 'Proposition commerciale').trim();
       const title = String(req.body?.title ?? '').trim();
@@ -1878,6 +1922,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         return;
       }
 
+      await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
       const { contentMarkdown, modelUsed } = generated;
       let saved = null;
       if (user) {
@@ -1891,216 +1936,6 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       }
 
       res.json({ contentMarkdown, modelUsed, document: saved });
-    })
-  );
-
-  // 8. Stripe Billing Routes
-  app.get(
-    '/api/stripe/status',
-    asyncRoute(async (_req, res) => {
-      const status = await getResolvedStripeConfigStatus(options.stripeClient);
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(status);
-    })
-  );
-
-  app.post(
-    '/api/stripe/create-checkout-session',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({
-          code: 'UNAUTHORIZED',
-          error: 'Connecte-toi ou crée un compte avant de souscrire à une formule.',
-        });
-        return;
-      }
-
-      const rawPlan = String(req.body?.plan ?? '');
-      const plan: Exclude<PlanTier, 'free'> | null =
-        rawPlan === 'pro' || rawPlan === 'business' ? rawPlan : null;
-      const interval: BillingInterval =
-        req.body?.interval === 'annual' ? 'annual' : 'monthly';
-
-      if (!plan) {
-        res.status(400).json({ code: 'INVALID_PLAN', error: 'Formule invalide.' });
-        return;
-      }
-
-      try {
-        const reqOrigin = req.headers.origin as string | undefined;
-        const originUrl = resolveAppBaseUrl(reqOrigin);
-        const session = await createCheckoutSessionForUser({
-          user,
-          plan,
-          interval,
-          originUrl,
-          stripeClient: options.stripeClient,
-        });
-        res.json(session);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Erreur Stripe Checkout.';
-        const isConflictErr = message.startsWith('ABONNEMENT_DEJA_ACTIF');
-        const isConfigErr =
-          message.startsWith('STRIPE_NON_CONFIGURE') ||
-          message.startsWith('STRIPE_PRICE_MANQUANT') ||
-          message.startsWith('STRIPE_LIVE_NON_AUTORISE');
-        const code = isConflictErr
-          ? 'ACTIVE_SUBSCRIPTION_EXISTS'
-          : message.startsWith('STRIPE_LIVE_NON_AUTORISE')
-          ? 'STRIPE_LIVE_LOCKED'
-          : message.startsWith('STRIPE_PRICE_MANQUANT')
-          ? 'STRIPE_PRICE_NOT_CONFIGURED'
-          : isConfigErr
-          ? 'STRIPE_NOT_CONFIGURED'
-          : 'STRIPE_CHECKOUT_ERROR';
-        res.status(isConflictErr ? 409 : isConfigErr ? 503 : 400).json({
-          code,
-          error: message,
-        });
-      }
-    })
-  );
-
-  app.post(
-    '/api/stripe/create-portal-session',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      try {
-        const reqOrigin = req.headers.origin as string | undefined;
-        const originUrl = resolveAppBaseUrl(reqOrigin);
-        const portal = await createBillingPortalForUser({
-          user,
-          originUrl,
-          stripeClient: options.stripeClient,
-        });
-        res.json(portal);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Erreur portail Stripe.';
-        res.status(400).json({ code: 'STRIPE_PORTAL_ERROR', error: message });
-      }
-    })
-  );
-
-  app.get(
-    '/api/stripe/verify-session',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      const sessionId = String(req.query.session_id ?? '').trim();
-      if (!sessionId) {
-        res.status(400).json({ code: 'MISSING_SESSION_ID', error: 'Identifiant de session manquant.' });
-        return;
-      }
-      try {
-        const ipHash = hashIp(getClientIp(req));
-        const result = await verifyCheckoutSessionForUser({
-          user,
-          sessionId,
-          stripeClient: options.stripeClient,
-        });
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        res.json({
-          ...result,
-          quota: await buildQuotaSnapshot(result.user, ipHash),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Impossible de vérifier le paiement Stripe.';
-        res.status(400).json({ code: 'VERIFY_SESSION_ERROR', error: message });
-      }
-    })
-  );
-
-  app.post(
-    '/api/stripe/cancel-subscription',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      try {
-        const ipHash = hashIp(getClientIp(req));
-        const updatedUser = await setSubscriptionCancellation({
-          userId: user.id,
-          cancelAtPeriodEnd: true,
-          stripeClient: options.stripeClient,
-        });
-        res.json({
-          user: updatedUser,
-          quota: await buildQuotaSnapshot(updatedUser, ipHash),
-          subscriptions: await listUserSubscriptions(user.id),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Erreur lors de la résiliation.';
-        res.status(400).json({ code: 'CANCEL_SUBSCRIPTION_ERROR', error: message });
-      }
-    })
-  );
-
-  app.post(
-    '/api/stripe/reactivate-subscription',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      try {
-        const ipHash = hashIp(getClientIp(req));
-        const updatedUser = await setSubscriptionCancellation({
-          userId: user.id,
-          cancelAtPeriodEnd: false,
-          stripeClient: options.stripeClient,
-        });
-        res.json({
-          user: updatedUser,
-          quota: await buildQuotaSnapshot(updatedUser, ipHash),
-          subscriptions: await listUserSubscriptions(user.id),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Erreur lors de la réactivation.';
-        res.status(400).json({ code: 'REACTIVATE_SUBSCRIPTION_ERROR', error: message });
-      }
-    })
-  );
-
-  app.get(
-    '/api/stripe/subscriptions',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json({ subscriptions: await listUserSubscriptions(user.id) });
-    })
-  );
-
-  app.get(
-    '/api/stripe/invoices',
-    asyncRoute(async (req, res) => {
-      const user = await getAuthenticatedPublicUser(req);
-      if (!user) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Connexion requise.' });
-        return;
-      }
-      try {
-        const result = await listStripeInvoicesForUser(user, options.stripeClient);
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        res.json(result);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Impossible de charger les factures Stripe.';
-        res.status(400).json({ code: 'STRIPE_INVOICES_ERROR', error: message });
-      }
     })
   );
 

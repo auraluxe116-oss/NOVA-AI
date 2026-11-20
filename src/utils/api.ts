@@ -1,22 +1,17 @@
 import type {
   AIProviderId,
   AIProviderInfo,
-  BillingInterval,
   BusinessProject,
   ChatMessage,
   CompanyCreationResult,
   ConversationSummary,
   DashboardData,
   ExperienceLevel,
-  PlanTier,
   PublicUser,
   PublishedSiteSummary,
   QuotaSnapshot,
   SavedCompanyCreation,
   SourceLink,
-  StripeInvoiceSummary,
-  StripeStatus,
-  SubscriptionRecord,
   UserDocument,
   UserPreferences,
   VideoStoryboard,
@@ -355,66 +350,6 @@ export async function deleteDocumentApi(id: string): Promise<void> {
   await requestJson(`/api/documents/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
-}
-
-export async function fetchStripeStatus(): Promise<StripeStatus> {
-  return requestJson('/api/stripe/status');
-}
-
-export async function createStripeCheckout(
-  plan: Exclude<PlanTier, 'free'>,
-  interval: BillingInterval
-): Promise<{ url: string; sessionId: string; mode: 'test' | 'live' }> {
-  return requestJson('/api/stripe/create-checkout-session', {
-    method: 'POST',
-    body: JSON.stringify({ plan, interval }),
-  });
-}
-
-export async function verifyStripeCheckoutSession(sessionId: string): Promise<{
-  verified: boolean;
-  paymentStatus: string;
-  plan: PlanTier;
-  interval: BillingInterval;
-  user: PublicUser;
-  quota: QuotaSnapshot;
-}> {
-  return requestJson(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-}
-
-export async function createStripePortal(): Promise<{ url: string }> {
-  return requestJson('/api/stripe/create-portal-session', {
-    method: 'POST',
-  });
-}
-
-export async function cancelStripeSubscription(): Promise<{
-  user: PublicUser;
-  quota: QuotaSnapshot;
-  subscriptions: SubscriptionRecord[];
-}> {
-  return requestJson('/api/stripe/cancel-subscription', { method: 'POST' });
-}
-
-export async function reactivateStripeSubscription(): Promise<{
-  user: PublicUser;
-  quota: QuotaSnapshot;
-  subscriptions: SubscriptionRecord[];
-}> {
-  return requestJson('/api/stripe/reactivate-subscription', { method: 'POST' });
-}
-
-export async function fetchUserSubscriptions(): Promise<{
-  subscriptions: SubscriptionRecord[];
-}> {
-  return requestJson('/api/stripe/subscriptions');
-}
-
-export async function fetchStripeInvoices(): Promise<{
-  invoices: StripeInvoiceSummary[];
-  stripeConfigured: boolean;
-}> {
-  return requestJson('/api/stripe/invoices');
 }
 
 async function consumeSseStream(

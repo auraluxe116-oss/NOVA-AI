@@ -186,6 +186,30 @@ test('tous les 18 modules business et anciens alias fonctionnent sans HTTP 400 I
   const allCanonical = Object.keys(BUSINESS_MODULE_LABELS);
   assert.equal(allCanonical.length, 18);
 
+  const modReg = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'modules-suite@nova-test.local',
+      password: 'PasswordModules123!',
+      displayName: 'Modules Suite',
+    }),
+  });
+  assert.equal(modReg.status, 201);
+  const modCookie = (modReg.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
+  const aliasReg = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: 'modules-alias@nova-test.local',
+      password: 'PasswordModules123!',
+      displayName: 'Modules Alias',
+    }),
+  });
+  assert.equal(aliasReg.status, 201);
+  const aliasCookie = (aliasReg.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
   const previouslyBrokenAliases = [
     'market_research',
     'quote_builder',
@@ -194,10 +218,10 @@ test('tous les 18 modules business et anciens alias fonctionnent sans HTTP 400 I
     'business_growth',
   ];
 
-  for (const modKey of [...allCanonical, ...previouslyBrokenAliases]) {
+  for (const modKey of allCanonical) {
     const res = await fetch(`${baseUrl}/api/business/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: modCookie },
       body: JSON.stringify({
         moduleKey: modKey,
         title: `Test ${modKey}`,
@@ -214,9 +238,29 @@ test('tous les 18 modules business et anciens alias fonctionnent sans HTTP 400 I
     assert.ok(body.includes(normalizeBusinessModuleKey(modKey)!));
   }
 
+  for (const modKey of previouslyBrokenAliases) {
+    const res = await fetch(`${baseUrl}/api/business/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: aliasCookie },
+      body: JSON.stringify({
+        moduleKey: modKey,
+        title: `Test ${modKey}`,
+        sector: 'Conseil B2B',
+        budgetEur: 300,
+        goal: 'Valider offre et trouver 2 clients pilotes',
+      }),
+    });
+    assert.equal(res.status, 200, `L'alias ${modKey} doit réussir en SSE 200`);
+    const events = parseSsePayloads(await res.text());
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done, `Événement done attendu pour ${modKey}`);
+    const body = extractSseText(events);
+    assert.ok(body.includes(normalizeBusinessModuleKey(modKey)!));
+  }
+
   const invalidRes = await fetch(`${baseUrl}/api/business/generate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Cookie: aliasCookie },
     body: JSON.stringify({
       moduleKey: 'module_inexistant_xyz',
       title: 'Test',
@@ -303,7 +347,7 @@ test('question business -> changement complet de sujet -> transmission du niveau
   assert.ok(planDone?.project?.id, 'Le plan d’action doit être persisté en base');
 });
 
-test('conversation longue (> 16 messages) déclenche le résumé automatique sans blocage', async () => {
+test('conversation longue (> 24 messages) déclenche le résumé automatique sans blocage', async () => {
   summarizeInvocations = 0;
 
   const reg = await fetch(`${baseUrl}/api/auth/register`, {
@@ -324,8 +368,8 @@ test('conversation longue (> 16 messages) déclenche le résumé automatique san
     category: 'business',
   });
 
-  // Seed 16 alternating historical turns (8 Q/A pairs)
-  for (let i = 1; i <= 8; i += 1) {
+  // Seed 26 alternating historical turns (13 Q/A pairs > 24 threshold)
+  for (let i = 1; i <= 13; i += 1) {
     await addMessage({ conversationId: conv.id, role: 'user', content: `Question étape ${i}` });
     await addMessage({ conversationId: conv.id, role: 'assistant', content: `Réponse étape ${i}` });
   }
@@ -365,7 +409,10 @@ test('erreur IA sur /api/business/generate remonte proprement un événement SSE
   });
   const res = await fetch(`${baseUrl}/api/business/generate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Forwarded-For': '198.51.100.77',
+    },
     body: JSON.stringify({
       moduleKey: 'business_plan',
       title: 'Test Erreur',

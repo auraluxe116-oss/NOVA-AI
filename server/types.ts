@@ -1,8 +1,6 @@
-export type PlanTier = 'free' | 'pro' | 'business';
-export type BillingInterval = 'monthly' | 'annual';
-export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
+export type PlanTier = 'free';
 export type ExperienceLevel = 'debutant' | 'intermediaire' | 'confirme';
-export type AIProviderId = 'gemini' | 'openai' | 'anthropic' | 'mistral';
+export type AIProviderId = 'gemini';
 
 export interface AIProviderInfo {
   id: AIProviderId;
@@ -25,28 +23,28 @@ export interface UserPreferences {
   autoWebSearch: boolean;
 }
 
-export interface StripeInvoiceSummary {
-  id: string;
-  number: string | null;
-  status: string | null;
-  amountPaidCents: number;
-  currency: string;
-  createdAt: string;
-  hostedInvoiceUrl: string | null;
-  invoicePdf: string | null;
-}
+export const FREE_TIER_DAILY_LIMITS = {
+  guest: {
+    chat: 25,
+    business: 10,
+  },
+  user: {
+    chat: 100,
+    business: 40,
+  },
+} as const;
 
 export interface PlanSpec {
   id: PlanTier;
   name: string;
   tagline: string;
-  monthlyPriceEur: number;
-  annualMonthlyEquivalentEur: number;
-  annualTotalEur: number;
-  unlimitedInAppMessages: boolean;
+  monthlyPriceEur: 0;
   maxAttachmentBytes: number;
-  maxPublishedSites: number | null;
-  priorityRouting: boolean;
+  maxPublishedSites: number;
+  dailyChatLimitGuest: number;
+  dailyChatLimitUser: number;
+  dailyBusinessLimitGuest: number;
+  dailyBusinessLimitUser: number;
   webSearchIncluded: boolean;
   fullBusinessSuite: boolean;
   companyCreationSuite: boolean;
@@ -56,47 +54,15 @@ export interface PlanSpec {
 export const PLAN_SPECS: Record<PlanTier, PlanSpec> = {
   free: {
     id: 'free',
-    name: 'GRATUIT',
-    tagline: 'Pour découvrir NOVA AI PRO sans plafond interne de messages',
+    name: 'GRATUIT · 0 €',
+    tagline: 'Plateforme IA 100 % gratuite (budget strict 0 €) — sans carte bancaire ni abonnement',
     monthlyPriceEur: 0,
-    annualMonthlyEquivalentEur: 0,
-    annualTotalEur: 0,
-    unlimitedInAppMessages: true,
-    maxAttachmentBytes: 120 * 1024,
-    maxPublishedSites: 3,
-    priorityRouting: false,
-    webSearchIncluded: true,
-    fullBusinessSuite: true,
-    companyCreationSuite: true,
-    exportEnabled: true,
-  },
-  pro: {
-    id: 'pro',
-    name: 'PRO',
-    tagline: 'Pour entrepreneurs, indépendants et créateurs exigeants',
-    monthlyPriceEur: 9.99,
-    annualMonthlyEquivalentEur: 7.99,
-    annualTotalEur: 95.88,
-    unlimitedInAppMessages: true,
     maxAttachmentBytes: 512 * 1024,
-    maxPublishedSites: 25,
-    priorityRouting: true,
-    webSearchIncluded: true,
-    fullBusinessSuite: true,
-    companyCreationSuite: true,
-    exportEnabled: true,
-  },
-  business: {
-    id: 'business',
-    name: 'BUSINESS',
-    tagline: 'Pour fondateurs, dirigeants et équipes en croissance',
-    monthlyPriceEur: 19.99,
-    annualMonthlyEquivalentEur: 15.99,
-    annualTotalEur: 191.88,
-    unlimitedInAppMessages: true,
-    maxAttachmentBytes: 2048 * 1024,
-    maxPublishedSites: null,
-    priorityRouting: true,
+    maxPublishedSites: 10,
+    dailyChatLimitGuest: FREE_TIER_DAILY_LIMITS.guest.chat,
+    dailyChatLimitUser: FREE_TIER_DAILY_LIMITS.user.chat,
+    dailyBusinessLimitGuest: FREE_TIER_DAILY_LIMITS.guest.business,
+    dailyBusinessLimitUser: FREE_TIER_DAILY_LIMITS.user.business,
     webSearchIncluded: true,
     fullBusinessSuite: true,
     companyCreationSuite: true,
@@ -111,12 +77,6 @@ export interface UserRecord {
   display_name: string;
   company_name: string;
   plan: PlanTier;
-  billing_interval: BillingInterval;
-  subscription_status: SubscriptionStatus;
-  cancel_at_period_end: number;
-  stripe_customer_id: string | null;
-  stripe_subscription_id: string | null;
-  current_period_end: string | null;
   recovery_code_hash?: string | null;
   preferences_json?: string | null;
   token_version?: number;
@@ -131,34 +91,10 @@ export interface PublicUser {
   companyName: string;
   plan: PlanTier;
   effectivePlan: PlanTier;
-  billingInterval: BillingInterval;
-  subscriptionStatus: SubscriptionStatus;
-  cancelAtPeriodEnd: boolean;
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  currentPeriodEnd: string | null;
+  zeroCostMode: true;
   hasRecoveryCode: boolean;
   preferences: UserPreferences;
   createdAt: string;
-}
-
-export interface SubscriptionRow {
-  id: string;
-  user_id: string;
-  stripe_customer_id: string | null;
-  stripe_subscription_id: string | null;
-  stripe_checkout_session_id: string | null;
-  plan: PlanTier;
-  billing_interval: BillingInterval;
-  amount_cents: number;
-  currency: string;
-  status: string;
-  cancel_at_period_end: number;
-  current_period_start: string | null;
-  current_period_end: string | null;
-  canceled_at: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface CompanyCreationResult {
@@ -236,27 +172,6 @@ export interface VideoStoryboard {
   scenes: VideoScene[];
 }
 
-export function resolveEffectivePlan(input: {
-  plan?: PlanTier | string;
-  subscription_status?: SubscriptionStatus | string;
-  subscriptionStatus?: SubscriptionStatus | string;
-  current_period_end?: string | null;
-  currentPeriodEnd?: string | null;
-}): PlanTier {
-  const plan = input.plan;
-  if (plan !== 'pro' && plan !== 'business') {
-    return 'free';
-  }
-  const status = input.subscriptionStatus ?? input.subscription_status ?? 'inactive';
-  if (status !== 'active') {
-    return 'free';
-  }
-  const periodEnd = input.currentPeriodEnd ?? input.current_period_end ?? null;
-  if (periodEnd) {
-    const endMs = Date.parse(periodEnd);
-    if (Number.isFinite(endMs) && Date.now() > endMs + 5 * 60_000) {
-      return 'free';
-    }
-  }
-  return plan;
+export function resolveEffectivePlan(): PlanTier {
+  return 'free';
 }

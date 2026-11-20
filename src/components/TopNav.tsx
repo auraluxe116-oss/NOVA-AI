@@ -15,7 +15,7 @@ export function TopNav({ activeView, user, onNavigate }: TopNavProps) {
     { id: 'accueil', label: 'Accueil' },
     { id: 'assistant', label: 'Assistant IA' },
     { id: 'business', label: 'Mode Business' },
-    { id: 'tarifs', label: 'Tarifs' },
+    { id: 'tarifs', label: 'Gratuit 0 €' },
   ];
 
   if (user) {
@@ -53,7 +53,7 @@ export function TopNav({ activeView, user, onNavigate }: TopNavProps) {
             </svg>
           </span>
           <span className="font-display text-lg font-bold tracking-tight text-[#FAFAFA]">
-            NOVA AI PRO
+            NOVA AI
           </span>
         </button>
 

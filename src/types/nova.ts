@@ -8,17 +8,13 @@ export type PageView =
   | 'dashboard'
   | 'historique'
   | 'profil'
-  | 'paiement-succes'
-  | 'paiement-echec'
   | 'confidentialite'
   | 'mentions-legales'
   | 'cgv';
 
-export type PlanTier = 'free' | 'pro' | 'business';
-export type BillingInterval = 'monthly' | 'annual';
-export type SubscriptionStatus = 'inactive' | 'active' | 'past_due' | 'canceled';
+export type PlanTier = 'free';
 export type ExperienceLevel = 'debutant' | 'intermediaire' | 'confirme';
-export type AIProviderId = 'gemini' | 'openai' | 'anthropic' | 'mistral';
+export type AIProviderId = 'gemini';
 
 export interface AIProviderInfo {
   id: AIProviderId;
@@ -43,44 +39,24 @@ export interface PublicUser {
   companyName: string;
   plan: PlanTier;
   effectivePlan: PlanTier;
-  billingInterval: BillingInterval;
-  subscriptionStatus: SubscriptionStatus;
-  cancelAtPeriodEnd: boolean;
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  currentPeriodEnd: string | null;
+  zeroCostMode: true;
   hasRecoveryCode: boolean;
   preferences: UserPreferences;
   createdAt: string;
 }
 
-export interface SubscriptionRecord {
-  id: string;
-  user_id: string;
-  stripe_customer_id: string | null;
-  stripe_subscription_id: string | null;
-  stripe_checkout_session_id: string | null;
-  plan: PlanTier;
-  billing_interval: BillingInterval;
-  amount_cents: number;
-  currency: string;
-  status: string;
-  cancel_at_period_end: number;
-  current_period_start: string | null;
-  current_period_end: string | null;
-  canceled_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface QuotaSnapshot {
   plan: PlanTier;
+  zeroCostMode: true;
   isAuthenticated: boolean;
-  unlimitedInAppMessages: boolean;
   chatUsedToday: number;
   businessUsedToday: number;
+  dailyChatLimit: number;
+  dailyBusinessLimit: number;
+  dailyChatRemaining: number;
+  dailyBusinessRemaining: number;
   maxAttachmentBytes: number;
-  maxPublishedSites: number | null;
+  maxPublishedSites: number;
   exportEnabled: boolean;
   fullBusinessSuite: boolean;
   companyCreationSuite: boolean;
@@ -240,45 +216,6 @@ export interface VideoStoryboard {
   scenes: VideoScene[];
 }
 
-export interface PlanPricingSnapshot {
-  monthlyCents: number | null;
-  annualCents: number | null;
-  currency: string;
-  monthlyConfigured: boolean;
-  annualConfigured: boolean;
-  source: 'stripe_price' | 'env_cents' | 'unconfigured';
-}
-
-export interface StripeStatus {
-  stripeConfigured: boolean;
-  stripeMode: 'test' | 'live' | 'unconfigured';
-  liveAuthorized: boolean;
-  webhookConfigured: boolean;
-  checkoutReady: boolean;
-  usingConfiguredPriceIds: boolean;
-  prices: {
-    proMonthly: boolean;
-    proAnnual: boolean;
-    businessMonthly: boolean;
-    businessAnnual: boolean;
-  };
-  catalog: {
-    pro: PlanPricingSnapshot;
-    business: PlanPricingSnapshot;
-  };
-}
-
-export interface StripeInvoiceSummary {
-  id: string;
-  number: string | null;
-  status: string | null;
-  amountPaidCents: number;
-  currency: string;
-  createdAt: string;
-  hostedInvoiceUrl: string | null;
-  invoicePdf: string | null;
-}
-
 export interface DashboardData {
   user: PublicUser;
   quota: QuotaSnapshot;
@@ -297,5 +234,4 @@ export interface DashboardData {
   recentCompanyCreations: SavedCompanyCreation[];
   publishedSites: PublishedSiteSummary[];
   recentDocuments: UserDocument[];
-  subscriptions: SubscriptionRecord[];
 }

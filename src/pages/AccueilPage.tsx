@@ -36,15 +36,15 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
         <div className="mx-auto grid max-w-7xl gap-10 px-4 py-14 sm:px-6 lg:grid-cols-12 lg:items-center lg:py-20">
           <div className="lg:col-span-7 space-y-6">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-              Plateforme IA &amp; Suite Entrepreneuriale · NOVA AI PRO
+              Plateforme IA 100 % Gratuite (0 €) · NOVA AI
             </p>
             <h1 className="font-display text-[clamp(2.25rem,4.4vw,3.75rem)] font-bold leading-[1.06] tracking-tight text-[#FAFAFA]">
-              Créer votre entreprise, produire vos médias et piloter vos projets sans friction.
+              Créer votre entreprise, produire vos médias et piloter vos projets gratuitement.
             </h1>
             <p className="max-w-2xl text-base leading-relaxed text-[#B2B2C6] sm:text-lg">
-              NOVA AI PRO réunit un assistant conversationnel temps réel sans plafond interne,
+              NOVA AI réunit un assistant conversationnel temps réel gratuit (budget strict 0 €),
               un générateur complet d&apos;entreprise (Logo PNG, Site publié, Marque, Offre &amp;
-              Business Plan), un Studio Contenu &amp; Vidéo WebM et l&apos;export PDF.
+              Business Plan), un Studio Contenu &amp; Vidéo WebM local et l&apos;export PDF.
             </p>
 
             {/* Quick Launch Bar directly wired to live streaming Assistant */}
@@ -57,7 +57,7 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
                 value={quickInput}
                 onChange={(e) => setQuickInput(e.target.value)}
                 placeholder="Posez une question business, technique, financière ou stratégique..."
-                aria-label="Question rapide pour NOVA AI PRO"
+                aria-label="Question rapide pour NOVA AI"
                 className="w-full bg-transparent px-3.5 py-2.5 text-sm text-[#FAFAFA] placeholder-[#7B7B93] focus:outline-none"
               />
               <button
@@ -106,7 +106,7 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
                   onClick={() => onNavigate('tarifs')}
                   className="px-3 py-2 text-sm font-medium text-[#A1A1B5] hover:text-white transition-colors whitespace-nowrap shrink-0"
                 >
-                  Voir les tarifs
+                  Voir les limites gratuites (0 €)
                 </button>
               )}
             </div>
@@ -287,7 +287,7 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
                 onClick={() => onNavigate('tarifs')}
                 className="rounded-lg border border-[#2B2B3D] bg-[#171721] px-4 py-2.5 text-sm font-medium text-[#E4E4F0] hover:border-[#7C3AED]"
               >
-                Comparer les formules
+                Quotas gratuits (0 €)
               </button>
             </div>
           </div>
