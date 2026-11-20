@@ -273,14 +273,15 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       next();
       return;
     }
-    if (!rawOrigin || isAllowedOrigin) {
-      next();
+    const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if ((!rawOrigin && secFetchSite === 'cross-site') || (rawOrigin && !isAllowedOrigin)) {
+      res.status(403).json({
+        code: 'ORIGIN_MISMATCH',
+        error: 'Requête refusée pour des raisons de sécurité (origine non autorisée).',
+      });
       return;
     }
-    res.status(403).json({
-      code: 'ORIGIN_MISMATCH',
-      error: 'Requête refusée pour des raisons de sécurité (origine non autorisée).',
-    });
+    next();
   });
 
   app.use(express.json({ limit: '4mb' }));
@@ -343,7 +344,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
   app.get('/api/ai/providers', (_req, res) => {
     const aiConfigured = Boolean(resolveProviderKey('gemini'));
-    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Cache-Control', 'private, max-age=300');
     res.json({ providers: getAvailableAIProviders({ aiConfigured }) });
   });
 
@@ -1282,6 +1283,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       rawLevel === 'intermediaire' || rawLevel === 'confirme' ? rawLevel : 'debutant';
     const contextDetails = String(req.body?.contextDetails ?? '').trim().slice(0, 2000);
     const useWebSearch = Boolean(req.body?.useWebSearch);
+    const requestedModel =
+      typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+        ? GEMINI_MODELS.fallback
+        : GEMINI_MODELS.primary;
 
     if (!projectTitle || !sector || !goal) {
       res.status(400).json({
@@ -1306,6 +1311,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         res.status(429).json({
           code: 'BURST_LIMIT',
           retryAfterSec: burst.retryAfterSec,
+          failedModel: requestedModel,
+          alternativeModels: [],
+          noAlternativeAvailable: true,
           error: `Cadence élevée pour le service gratuit. Patientez ${burst.retryAfterSec} seconde(s).`,
         });
         return;
@@ -1338,7 +1346,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
     sendSseEvent(res, { type: 'status', label: 'NOVA structure votre plan en 7 étapes...' });
 
-    let activeModelForBusiness: string = GEMINI_MODELS.primary;
+    let activeModelForBusiness: string = requestedModel;
 
     try {
       const result = await runBusinessStream({
@@ -1352,6 +1360,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         experienceLevel,
         contextDetails,
         useWebSearch,
+        model: requestedModel,
         externalSignal: abortController.signal,
         callbacks: {
           onStatus: (label) => {
@@ -1504,6 +1513,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const experienceLevel: ExperienceLevel =
         rawLevel === 'intermediaire' || rawLevel === 'confirme' ? rawLevel : 'debutant';
       const contextDetails = String(req.body?.contextDetails ?? '').trim().slice(0, 2000);
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!projectTitle || !sector || !goal) {
         res.status(400).json({
@@ -1524,10 +1537,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           weeklyHours: Number.isFinite(weeklyHours) ? weeklyHours : undefined,
           experienceLevel,
           contextDetails,
+          model: requestedModel,
         });
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'business/company-suite', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
         return;
@@ -1597,6 +1611,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const secondaryColor = String(req.body?.secondaryColor ?? '#7C3AED').trim();
       const styleHint = String(req.body?.styleHint ?? '').trim();
       const creationId = typeof req.body?.creationId === 'string' ? req.body.creationId : null;
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!brandName) {
         res.status(400).json({ code: 'MISSING_BRAND', error: 'Nom de marque requis.' });
@@ -1611,10 +1629,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           primaryColor,
           secondaryColor,
           styleHint,
+          model: requestedModel,
         });
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'business/generate-logo', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
         return;
@@ -1661,6 +1680,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const logoSvg = String(req.body?.logoSvg ?? '').trim();
       const customInstructions = String(req.body?.customInstructions ?? '').trim();
       const creationId = typeof req.body?.creationId === 'string' ? req.body.creationId : null;
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!brandName) {
         res.status(400).json({ code: 'MISSING_BRAND', error: 'Nom de marque requis.' });
@@ -1679,10 +1702,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           packagesText,
           logoSvg,
           customInstructions,
+          model: requestedModel,
         });
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'business/generate-website', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
         return;
@@ -1828,6 +1852,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const targetAudience = String(req.body?.targetAudience ?? '').trim();
       const tone = String(req.body?.tone ?? '').trim();
       const callToAction = String(req.body?.callToAction ?? '').trim();
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!topic) {
         res.status(400).json({ code: 'MISSING_TOPIC', error: 'Précise le sujet du contenu.' });
@@ -1841,12 +1869,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           targetAudience,
           tone,
           callToAction,
+          model: requestedModel,
         });
         await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'content/generate', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
       }
@@ -1882,6 +1911,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const tone = String(req.body?.tone ?? 'Dynamique et professionnel').trim();
       const durationTargetSec = Number(req.body?.durationTargetSec ?? 25);
       const sourceScript = String(req.body?.sourceScript ?? '').trim();
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!topic && !sourceScript) {
         res.status(400).json({
@@ -1898,12 +1931,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           tone,
           durationTargetSec: Number.isFinite(durationTargetSec) ? durationTargetSec : 25,
           sourceScript,
+          model: requestedModel,
         });
         await recordUsage({ userId: user?.id ?? null, ipHash, kind: 'business' });
         res.json(result);
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'video/storyboard', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
       }
@@ -1994,6 +2028,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       const companyName = String(req.body?.companyName ?? '').trim();
       const clientName = String(req.body?.clientName ?? '').trim();
       const context = String(req.body?.context ?? '').trim();
+      const requestedModel =
+        typeof req.body?.model === 'string' && req.body.model.trim() === GEMINI_MODELS.fallback
+          ? GEMINI_MODELS.fallback
+          : GEMINI_MODELS.primary;
 
       if (!title || !context) {
         res.status(400).json({
@@ -2011,10 +2049,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           companyName,
           clientName,
           context,
+          model: requestedModel,
         });
       } catch (err) {
         sendMappedGeminiJsonError(res, err, 'documents/generate', {
-          failedModel: GEMINI_MODELS.primary,
+          failedModel: requestedModel,
           aiConfigured: Boolean(resolveProviderKey('gemini')),
         });
         return;

@@ -517,4 +517,22 @@ test('sécurité, isolation multi-utilisateurs, en-têtes no-store, assainisseme
   const liveRes = await fetch(`${baseUrl}${pubJson.publicPath}`);
   assert.equal(liveRes.status, 200);
   assert.match(await liveRes.text(), /Site Entreprise A/);
+
+  // 7. Assainissement SVG renforcé (script auto-fermant, iframe/object/embed, unquoted handlers, vbscript, data:text/html)
+  const hardSvg = sanitizeSvgLogo(
+    '<svg viewBox="0 0 100 100" onclick=alert(1)><script/><iframe src="https://evil.test"/><object data="x"/><embed src="x"/><a href="vbscript:msgbox(1)">x</a><image href="data:text/html,<script>1</script>"/><rect x="10" y="10" width="80" height="80" fill="#7C3AED"/></svg>',
+    'Nova',
+    '#7C3AED'
+  );
+  assert.doesNotMatch(hardSvg, /<script|<iframe|<object|<embed|onclick=|vbscript:|data:text\/html/i);
+  assert.match(hardSvg, /<rect/);
+
+  // 8. Précision 2026, distinction comptable & protection anti-injection document_utilisateur
+  const prompt2026 = buildAssistantSystemInstruction({
+    experienceLevel: 'debutant',
+    webSearchEnabled: false,
+  });
+  assert.match(prompt2026, /2026/);
+  assert.match(prompt2026, /TVA.*IS.*IR.*CFE|TVA, IS\/IR, CFE/i);
+  assert.match(prompt2026, /document_utilisateur/i);
 });

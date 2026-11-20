@@ -9,8 +9,16 @@ export const config = {
 
 const app = createApp();
 
-function normalizeVercelRequestUrl(rawUrl: string | undefined): string {
+export function normalizeVercelRequestUrl(rawUrl: string | undefined): string {
   const urlObj = new URL(rawUrl || '/api', 'http://localhost');
+  const rewrittenSite = urlObj.searchParams.get('__vercel_site');
+  if (rewrittenSite !== null) {
+    urlObj.searchParams.delete('__vercel_site');
+    const cleanSiteSlug = rewrittenSite.replace(/^\/+/, '');
+    const qs = urlObj.searchParams.toString();
+    return `/sites${cleanSiteSlug ? `/${cleanSiteSlug}` : ''}${qs ? `?${qs}` : ''}`;
+  }
+
   const rewrittenPath = urlObj.searchParams.get('__vercel_path');
 
   if (rewrittenPath !== null) {
@@ -18,6 +26,10 @@ function normalizeVercelRequestUrl(rawUrl: string | undefined): string {
     const cleanSubPath = rewrittenPath.replace(/^\/+/, '');
     const qs = urlObj.searchParams.toString();
     return `/api${cleanSubPath ? `/${cleanSubPath}` : ''}${qs ? `?${qs}` : ''}`;
+  }
+
+  if (urlObj.pathname.startsWith('/sites/')) {
+    return `${urlObj.pathname}${urlObj.search}`;
   }
 
   if (!urlObj.pathname.startsWith('/api')) {

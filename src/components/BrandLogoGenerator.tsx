@@ -9,7 +9,10 @@ export function BrandLogoGenerator() {
   const [background, setBackground] = useState('#111117');
   const [style, setStyle] = useState<(typeof styles)[number]>('Tech');
 
+  const safeColor = /^#[0-9A-Fa-f]{6}$/.test(color) ? color : '#8B5CF6';
+  const safeBackground = /^#[0-9A-Fa-f]{6}$/.test(background) ? background : '#111117';
   const initial = (name.trim()[0] || 'N').toUpperCase();
+  const displayBrandName = name || 'VOTRE MARQUE';
 
   const escapeXml = (value: string) =>
     value.replace(/[<>&"']/g, (char) =>
@@ -26,22 +29,22 @@ export function BrandLogoGenerator() {
 
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="900" height="450" viewBox="0 0 900 450">
-    <rect width="900" height="450" rx="28" fill="${background}"/>
+    <rect width="900" height="450" rx="28" fill="${safeBackground}"/>
     <g transform="translate(450 145)">
       ${
         style === 'Premium'
-          ? `<path d="M0 -75 L75 0 L0 75 L-75 0 Z" fill="none" stroke="${color}" stroke-width="9"/>
-             <text x="0" y="20" text-anchor="middle" font-size="58" font-family="Georgia" font-weight="bold" fill="${color}">${escapeXml(initial)}</text>`
+          ? `<path d="M0 -75 L75 0 L0 75 L-75 0 Z" fill="none" stroke="${safeColor}" stroke-width="9"/>
+             <text x="0" y="20" text-anchor="middle" font-size="58" font-family="Georgia" font-weight="bold" fill="${safeColor}">${escapeXml(initial)}</text>`
           : style === 'Minimal'
-            ? `<circle r="67" fill="none" stroke="${color}" stroke-width="8"/>
-               <text x="0" y="23" text-anchor="middle" font-size="76" font-family="Arial" font-weight="bold" fill="${color}">${escapeXml(initial)}</text>`
-            : `<rect x="-67" y="-67" width="134" height="134" rx="28" fill="${color}"/>
+            ? `<circle r="67" fill="none" stroke="${safeColor}" stroke-width="8"/>
+               <text x="0" y="23" text-anchor="middle" font-size="76" font-family="Arial" font-weight="bold" fill="${safeColor}">${escapeXml(initial)}</text>`
+            : `<rect x="-67" y="-67" width="134" height="134" rx="28" fill="${safeColor}"/>
                <path d="M-30 30 L0 -35 L30 30" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
                <text x="0" y="18" text-anchor="middle" font-size="48" font-family="Arial" font-weight="bold" fill="#FFFFFF">${escapeXml(initial)}</text>`
       }
     </g>
-    <text x="450" y="285" text-anchor="middle" font-size="62" font-family="Arial, sans-serif" font-weight="bold" letter-spacing="3" fill="#FFFFFF">${escapeXml(name || 'VOTRE MARQUE')}</text>
-    <text x="450" y="335" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" letter-spacing="4" fill="${color}">${escapeXml(slogan)}</text>
+    <text x="450" y="285" text-anchor="middle" font-size="62" font-family="Arial, sans-serif" font-weight="bold" letter-spacing="3" fill="#FFFFFF">${escapeXml(displayBrandName)}</text>
+    <text x="450" y="335" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" letter-spacing="4" fill="${safeColor}">${escapeXml(slogan)}</text>
   </svg>`;
 
   const download = (format: 'svg' | 'png') => {
@@ -133,7 +136,7 @@ export function BrandLogoGenerator() {
           Couleur principale
           <input
             type="color"
-            value={color}
+            value={safeColor}
             onChange={(e) => setColor(e.target.value)}
             className="h-11 w-full cursor-pointer rounded-lg border border-[#262638] bg-[#0B0B10] p-1"
           />
@@ -143,7 +146,7 @@ export function BrandLogoGenerator() {
           Couleur du fond
           <input
             type="color"
-            value={background}
+            value={safeBackground}
             onChange={(e) => setBackground(e.target.value)}
             className="h-11 w-full cursor-pointer rounded-lg border border-[#262638] bg-[#0B0B10] p-1"
           />
@@ -152,14 +155,98 @@ export function BrandLogoGenerator() {
 
       <div className="overflow-hidden rounded-xl border border-[#303044]">
         <svg
+          xmlns="http://www.w3.org/2000/svg"
           viewBox="0 0 900 450"
           className="block w-full"
           role="img"
-          aria-label={`Aperçu du logo ${name}`}
-          dangerouslySetInnerHTML={{
-            __html: svg.replace(/^.*?<svg[^>]*>/s, '').replace(/<\/svg>\s*$/, ''),
-          }}
-        />
+          aria-label={`Aperçu du logo ${displayBrandName}`}
+        >
+          <rect width="900" height="450" rx="28" fill={safeBackground} />
+          <g transform="translate(450 145)">
+            {style === 'Premium' ? (
+              <>
+                <path
+                  d="M0 -75 L75 0 L0 75 L-75 0 Z"
+                  fill="none"
+                  stroke={safeColor}
+                  strokeWidth="9"
+                />
+                <text
+                  x="0"
+                  y="20"
+                  textAnchor="middle"
+                  fontSize="58"
+                  fontFamily="Georgia"
+                  fontWeight="bold"
+                  fill={safeColor}
+                >
+                  {initial}
+                </text>
+              </>
+            ) : style === 'Minimal' ? (
+              <>
+                <circle r="67" fill="none" stroke={safeColor} strokeWidth="8" />
+                <text
+                  x="0"
+                  y="23"
+                  textAnchor="middle"
+                  fontSize="76"
+                  fontFamily="Arial"
+                  fontWeight="bold"
+                  fill={safeColor}
+                >
+                  {initial}
+                </text>
+              </>
+            ) : (
+              <>
+                <rect x="-67" y="-67" width="134" height="134" rx="28" fill={safeColor} />
+                <path
+                  d="M-30 30 L0 -35 L30 30"
+                  fill="none"
+                  stroke="#FFFFFF"
+                  strokeWidth="10"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <text
+                  x="0"
+                  y="18"
+                  textAnchor="middle"
+                  fontSize="48"
+                  fontFamily="Arial"
+                  fontWeight="bold"
+                  fill="#FFFFFF"
+                >
+                  {initial}
+                </text>
+              </>
+            )}
+          </g>
+          <text
+            x="450"
+            y="285"
+            textAnchor="middle"
+            fontSize="62"
+            fontFamily="Arial, sans-serif"
+            fontWeight="bold"
+            letterSpacing="3"
+            fill="#FFFFFF"
+          >
+            {displayBrandName}
+          </text>
+          <text
+            x="450"
+            y="335"
+            textAnchor="middle"
+            fontSize="20"
+            fontFamily="Arial, sans-serif"
+            letterSpacing="4"
+            fill={safeColor}
+          >
+            {slogan}
+          </text>
+        </svg>
       </div>
 
       <div className="flex flex-wrap gap-2">

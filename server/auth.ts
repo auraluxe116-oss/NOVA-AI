@@ -154,11 +154,11 @@ export function setSessionCookie(
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
   if (isHttps) {
-    parts.push('Secure');
+    parts.push('Secure', 'Partitioned');
   }
   res.setHeader('Set-Cookie', parts.join('; '));
 }
@@ -171,11 +171,11 @@ export function clearSessionCookie(req: express.Request, res: express.Response):
     `${SESSION_COOKIE_NAME}=`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
     'Max-Age=0',
   ];
   if (isHttps) {
-    parts.push('Secure');
+    parts.push('Secure', 'Partitioned');
   }
   res.setHeader('Set-Cookie', parts.join('; '));
 }

@@ -1,16 +1,29 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { TopNav } from './components/TopNav';
 import { AccueilPage } from './pages/AccueilPage';
 import { AssistantPage } from './pages/AssistantPage';
-import { AuthPages } from './pages/AuthPages';
-import { BusinessModePage } from './pages/BusinessModePage';
-import { DashboardPage } from './pages/DashboardPage';
-import { HistoryPage } from './pages/HistoryPage';
-import { LegalPages } from './pages/LegalPages';
-import { ProfilePage } from './pages/ProfilePage';
-import { TarifsPage } from './pages/TarifsPage';
 import type { PageView, PublicUser, QuotaSnapshot } from './types/nova';
 import { fetchAuthMe } from './utils/api';
+
+const AuthPages = lazy(() => import('./pages/AuthPages').then((m) => ({ default: m.AuthPages })));
+const BusinessModePage = lazy(() =>
+  import('./pages/BusinessModePage').then((m) => ({ default: m.BusinessModePage }))
+);
+const DashboardPage = lazy(() =>
+  import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage }))
+);
+const HistoryPage = lazy(() =>
+  import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage }))
+);
+const LegalPages = lazy(() =>
+  import('./pages/LegalPages').then((m) => ({ default: m.LegalPages }))
+);
+const ProfilePage = lazy(() =>
+  import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage }))
+);
+const TarifsPage = lazy(() =>
+  import('./pages/TarifsPage').then((m) => ({ default: m.TarifsPage }))
+);
 
 const VALID_VIEWS: PageView[] = [
   'accueil',
@@ -101,97 +114,113 @@ export function App() {
         </div>
       ) : (
         <div className="flex-1">
-          {activeView === 'accueil' && (
-            <AccueilPage
-              user={user}
-              onNavigate={navigate}
-              onLaunchPrompt={handleLaunchPrompt}
-            />
-          )}
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center py-24 text-sm text-[#8D8DA4]">
+                Chargement de l&apos;espace...
+              </div>
+            }
+          >
+            {activeView === 'accueil' && (
+              <AccueilPage
+                user={user}
+                onNavigate={navigate}
+                onLaunchPrompt={handleLaunchPrompt}
+              />
+            )}
 
-          {activeView === 'assistant' && (
-            <AssistantPage
-              user={user}
-              quota={quota}
-              initialPrompt={pendingPrompt}
-              initialConversationId={openConversationId}
-              onClearInitialPrompt={() => setPendingPrompt(null)}
-              onQuotaUpdated={(q) => setQuota(q)}
-              onNavigate={navigate}
-            />
-          )}
+            {activeView === 'assistant' && (
+              <AssistantPage
+                user={user}
+                quota={quota}
+                initialPrompt={pendingPrompt}
+                initialConversationId={openConversationId}
+                onClearInitialPrompt={() => setPendingPrompt(null)}
+                onQuotaUpdated={(q) => setQuota(q)}
+                onUserUpdated={(u, q) => {
+                  setUser(u);
+                  setQuota(q);
+                }}
+                onNavigate={navigate}
+              />
+            )}
 
-          {activeView === 'business' && (
-            <BusinessModePage
-              user={user}
-              quota={quota}
-              initialProjectId={openBusinessProjectId}
-              onClearInitialProject={() => setOpenBusinessProjectId(null)}
-              onLaunchPrompt={handleLaunchPrompt}
-              onQuotaUpdated={(q) => setQuota(q)}
-              onNavigate={navigate}
-            />
-          )}
+            {activeView === 'business' && (
+              <BusinessModePage
+                user={user}
+                quota={quota}
+                initialProjectId={openBusinessProjectId}
+                onClearInitialProject={() => setOpenBusinessProjectId(null)}
+                onLaunchPrompt={handleLaunchPrompt}
+                onQuotaUpdated={(q) => setQuota(q)}
+                onUserUpdated={(u, q) => {
+                  setUser(u);
+                  setQuota(q);
+                }}
+                onNavigate={navigate}
+              />
+            )}
 
-          {activeView === 'tarifs' && (
-            <TarifsPage user={user} quota={quota} onNavigate={navigate} />
-          )}
+            {activeView === 'tarifs' && (
+              <TarifsPage user={user} quota={quota} onNavigate={navigate} />
+            )}
 
-          {(activeView === 'connexion' || activeView === 'inscription') && (
-            <AuthPages
-              mode={activeView}
-              onNavigate={navigate}
-              onAuthSuccess={(u, q) => {
-                setUser(u);
-                setQuota(q);
-                navigate('dashboard');
-              }}
-            />
-          )}
+            {(activeView === 'connexion' || activeView === 'inscription') && (
+              <AuthPages
+                mode={activeView}
+                onNavigate={navigate}
+                onAuthSuccess={(u, q) => {
+                  setUser(u);
+                  setQuota(q);
+                  navigate('dashboard');
+                }}
+              />
+            )}
 
-          {activeView === 'dashboard' && (
-            <DashboardPage
-              user={user}
-              onNavigate={navigate}
-              onOpenConversation={handleOpenConversation}
-              onOpenBusinessProject={handleOpenBusinessProject}
-            />
-          )}
+            {activeView === 'dashboard' && (
+              <DashboardPage
+                user={user}
+                onNavigate={navigate}
+                onOpenConversation={handleOpenConversation}
+                onOpenBusinessProject={handleOpenBusinessProject}
+              />
+            )}
 
-          {activeView === 'historique' && (
-            <HistoryPage
-              user={user}
-              onNavigate={navigate}
-              onOpenConversation={handleOpenConversation}
-            />
-          )}
+            {activeView === 'historique' && (
+              <HistoryPage
+                user={user}
+                onNavigate={navigate}
+                onOpenConversation={handleOpenConversation}
+              />
+            )}
 
-          {activeView === 'profil' && (
-            <ProfilePage
-              user={user}
-              quota={quota}
-              onNavigate={navigate}
-              onUserUpdated={(u, q) => {
-                setUser(u);
-                setQuota(q);
-              }}
-              onLoggedOut={() => {
-                setUser(null);
-                setOpenConversationId(null);
-                navigate('accueil');
-                void fetchAuthMe().then((r) => setQuota(r.quota));
-              }}
-            />
-          )}
-          {(activeView === 'confidentialite' ||
-            activeView === 'mentions-legales' ||
-            activeView === 'cgv') && (
-            <LegalPages
-              mode={activeView}
-              user={user}
-              onNavigate={navigate}
-            />
-          )}
+            {activeView === 'profil' && (
+              <ProfilePage
+                user={user}
+                quota={quota}
+                onNavigate={navigate}
+                onUserUpdated={(u, q) => {
+                  setUser(u);
+                  setQuota(q);
+                }}
+                onLoggedOut={() => {
+                  setUser(null);
+                  setOpenConversationId(null);
+                  navigate('accueil');
+                  void fetchAuthMe().then((r) => setQuota(r.quota));
+                }}
+              />
+            )}
+            {(activeView === 'confidentialite' ||
+              activeView === 'mentions-legales' ||
+              activeView === 'cgv') && (
+              <LegalPages
+                mode={activeView}
+                user={user}
+                onNavigate={navigate}
+              />
+            )}
+          </Suspense>
         </div>
       )}
 

@@ -15,7 +15,11 @@
       "destination": "/api/index?__vercel_path=$1"
     },
     {
-      "source": "/((?!api(?:/|$)).*)",
+      "source": "/sites/(.*)",
+      "destination": "/api/index?__vercel_site=$1"
+    },
+    {
+      "source": "/((?!api(?:/|$)|sites(?:/|$)).*)",
       "destination": "/index.html"
     }
   ]

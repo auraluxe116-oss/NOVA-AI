@@ -375,6 +375,7 @@ export async function generateCompanySuiteApi(payload: {
   weeklyHours?: number;
   experienceLevel?: ExperienceLevel;
   contextDetails?: string;
+  model?: string;
 }): Promise<{
   suite: CompanyCreationResult;
   creationId: string | null;
@@ -398,6 +399,7 @@ export async function regenerateLogoApi(payload: {
   secondaryColor: string;
   styleHint?: string;
   creationId?: string | null;
+  model?: string;
 }): Promise<{ logoSvg: string; modelUsed: string }> {
   return requestJson(
     '/api/business/generate-logo',
@@ -420,6 +422,7 @@ export async function regenerateWebsiteApi(payload: {
   logoSvg: string;
   customInstructions?: string;
   creationId?: string | null;
+  model?: string;
 }): Promise<{ websiteHtml: string; modelUsed: string }> {
   return requestJson(
     '/api/business/generate-website',
@@ -477,6 +480,7 @@ export async function generateContentMarketingApi(payload: {
   targetAudience?: string;
   tone?: string;
   callToAction?: string;
+  model?: string;
 }): Promise<{ content: string; modelUsed: string }> {
   return requestJson(
     '/api/content/generate',
@@ -494,6 +498,7 @@ export async function generateVideoStoryboardApi(payload: {
   tone?: string;
   durationTargetSec?: number;
   sourceScript?: string;
+  model?: string;
 }): Promise<{ storyboard: VideoStoryboard; modelUsed: string }> {
   return requestJson(
     '/api/video/storyboard',
@@ -517,6 +522,7 @@ export async function generateDocumentApi(payload: {
   companyName?: string;
   clientName?: string;
   context: string;
+  model?: string;
 }): Promise<{
   contentMarkdown: string;
   modelUsed: string;
@@ -860,6 +866,7 @@ export async function streamBusinessGeneration(params: {
   experienceLevel?: ExperienceLevel;
   contextDetails?: string;
   useWebSearch?: boolean;
+  model?: string;
   signal: AbortSignal;
   onStatus?: (label: string) => void;
   onDelta: (delta: string) => void;
@@ -884,6 +891,7 @@ export async function streamBusinessGeneration(params: {
       experienceLevel: params.experienceLevel ?? 'debutant',
       contextDetails: params.contextDetails ?? '',
       useWebSearch: Boolean(params.useWebSearch),
+      model: params.model,
     },
     params.signal,
     {

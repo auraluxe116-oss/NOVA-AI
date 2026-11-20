@@ -48,6 +48,7 @@ import {
   fetchConversations,
   renameConversationApi,
   streamChatMessage,
+  updateProfile,
 } from '../utils/api';
 
 interface AssistantPageProps {
@@ -57,6 +58,7 @@ interface AssistantPageProps {
   initialConversationId?: string | null;
   onClearInitialPrompt: () => void;
   onQuotaUpdated: (q: QuotaSnapshot) => void;
+  onUserUpdated?: (user: PublicUser, quota: QuotaSnapshot) => void;
   onNavigate: (view: PageView) => void;
 }
 
@@ -96,6 +98,7 @@ export function AssistantPage({
   initialConversationId,
   onClearInitialPrompt,
   onQuotaUpdated,
+  onUserUpdated,
   onNavigate,
 }: AssistantPageProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -111,6 +114,7 @@ export function AssistantPage({
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
   const draftStorageKey = `nova_draft_input_${user?.id ?? 'guest'}`;
+  const modelStorageKey = `nova_selected_model_${user?.id ?? 'guest'}`;
   const [input, setInput] = useState(() => {
     try {
       return typeof window !== 'undefined' ? window.sessionStorage.getItem(draftStorageKey) || '' : '';
@@ -126,9 +130,15 @@ export function AssistantPage({
   const [selectedProvider, setSelectedProvider] = useState<AIProviderId>(
     user?.preferences?.preferredProvider || 'gemini'
   );
-  const [selectedModel, setSelectedModel] = useState<string>(
-    user?.preferences?.preferredModel || 'gemini-4-hydrogen'
-  );
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      const saved =
+        typeof window !== 'undefined' ? window.sessionStorage.getItem(modelStorageKey) : null;
+      return saved || user?.preferences?.preferredModel || 'gemini-4-hydrogen';
+    } catch {
+      return user?.preferences?.preferredModel || 'gemini-4-hydrogen';
+    }
+  });
   const [summarizedActive, setSummarizedActive] = useState(false);
   const [attachment, setAttachment] = useState<AttachmentPayload | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
@@ -161,6 +171,7 @@ export function AssistantPage({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const consumedInitialPromptRef = useRef<string | null>(null);
+  const userManuallyPickedModelRef = useRef(false);
 
   const cancelActiveStream = () => {
     activeRequestSeqRef.current += 1;
@@ -231,11 +242,34 @@ export function AssistantPage({
     }
   };
 
+  const persistModelChoice = (prov: AIProviderId, mod: string) => {
+    userManuallyPickedModelRef.current = true;
+    setSelectedProvider(prov);
+    setSelectedModel(mod);
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(modelStorageKey, mod);
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+    if (user) {
+      void updateProfile({
+        preferences: {
+          preferredProvider: prov,
+          preferredModel: mod,
+        },
+      })
+        .then((res) => onUserUpdated?.(res.user, res.quota))
+        .catch(() => {});
+    }
+  };
+
   const refreshProviders = async (applyPreferredDefaults = false) => {
     try {
       const res = await fetchAIProviders();
       setProviders(res.providers);
-      if (applyPreferredDefaults) {
+      if (applyPreferredDefaults && !userManuallyPickedModelRef.current) {
         const prefProvider = user?.preferences?.preferredProvider || 'gemini';
         const match =
           res.providers.find((p) => p.id === prefProvider && p.configured) ||
@@ -243,15 +277,36 @@ export function AssistantPage({
           res.providers[0];
         if (match) {
           setSelectedProvider(match.id);
+          let savedSessionModel: string | null = null;
+          try {
+            savedSessionModel =
+              typeof window !== 'undefined'
+                ? window.sessionStorage.getItem(modelStorageKey)
+                : null;
+          } catch {
+            savedSessionModel = null;
+          }
           const prefModel = user?.preferences?.preferredModel;
+          const hasSessionModel =
+            savedSessionModel && match.models.some((m) => m.id === savedSessionModel);
           const hasPrefModel = prefModel && match.models.some((m) => m.id === prefModel);
-          setSelectedModel(hasPrefModel ? prefModel : match.defaultModel);
+          setSelectedModel(
+            hasSessionModel
+              ? (savedSessionModel as string)
+              : hasPrefModel
+                ? (prefModel as string)
+                : match.defaultModel
+          );
         }
       }
     } catch {
       // Fallback to Gemini default if fetch fails
     }
   };
+
+  useEffect(() => {
+    userManuallyPickedModelRef.current = false;
+  }, [user?.id]);
 
   useEffect(() => {
     void refreshProviders(true);
@@ -455,8 +510,7 @@ export function AssistantPage({
       options?.overrideAttachment !== undefined ? options.overrideAttachment : attachment;
     const modelToUse = options?.overrideModel || selectedModel;
     if (options?.overrideModel) {
-      setSelectedProvider('gemini');
-      setSelectedModel(options.overrideModel);
+      persistModelChoice('gemini', options.overrideModel);
     }
 
     // Pre-flight offline check: preserve user's drafted text in composer and show clear banner
@@ -668,7 +722,8 @@ export function AssistantPage({
           setAttachment((prev) => prev ?? currentAttachment);
         }
 
-        setErrorBanner(msg);
+        // L'erreur est affichée dans la carte dédiée du fil de discussion (isError) sans doublon dans le bandeau bas
+        setErrorBanner(null);
         setRetryCountdownSec(waitSec);
         setLastFailedRequest({
           prompt: cleanPrompt,
@@ -990,9 +1045,9 @@ export function AssistantPage({
             </h1>
             <span
               title="Modèle IA actuellement sélectionné"
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-[#232332] bg-[#111117] px-2 py-0.5 text-[11px] text-[#B2B2C6]"
+              className="inline-flex items-center gap-1 rounded-md border border-[#232332] bg-[#111117] px-2 py-0.5 text-[11px] text-[#B2B2C6] max-w-[180px] sm:max-w-none truncate"
             >
-              Modèle : <span className="font-mono text-[#E4E4EE]">{selectedModel}</span>
+              Modèle : <span className="font-mono text-[#E4E4EE] truncate">{selectedModel}</span>
             </span>
             {summarizedActive && (
               <span
@@ -1031,8 +1086,7 @@ export function AssistantPage({
                   onChange={(e) => {
                     const [prov, mod] = e.target.value.split(':') as [AIProviderId, string];
                     if (prov && mod) {
-                      setSelectedProvider(prov);
-                      setSelectedModel(mod);
+                      persistModelChoice(prov, mod);
                     }
                   }}
                   className="max-w-[145px] sm:max-w-[230px] truncate bg-transparent text-xs text-[#E4E4EE] focus:outline-none"
@@ -1335,7 +1389,7 @@ export function AssistantPage({
         {/* Composer */}
         <div className="border-t border-[#1F1F2D] bg-[#0B0B10] px-4 py-3 sm:px-6">
           <div className="mx-auto max-w-3xl space-y-2">
-            {errorBanner && (
+            {errorBanner && !messages.some((m) => m.isError) && (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                 <span className="flex-1 min-w-[200px]">{errorBanner}</span>
                 <div className="flex flex-wrap items-center gap-2">

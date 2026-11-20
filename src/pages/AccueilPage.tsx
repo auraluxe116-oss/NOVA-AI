@@ -1,5 +1,6 @@
 import { ArrowRight, Briefcase, Check, FileText, Globe, MessageSquare, ShieldCheck, Zap } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import heroImg from '../assets/images/nova_hero_abstract_1795010116580.jpg';
 import type { PageView, PublicUser } from '../types/nova';
 
 interface AccueilPageProps {
@@ -117,7 +118,7 @@ export function AccueilPage({ user, onNavigate, onLaunchPrompt }: AccueilPagePro
             <div className="overflow-hidden rounded-xl border border-[#232332] bg-[#0E0E14]">
               {!heroImageError ? (
                 <img
-                  src="/src/assets/images/nova_hero_abstract_1795010116580.jpg"
+                  src={heroImg}
                   alt="Environnement de travail architectural NOVA AI en noir et violet électrique"
                   referrerPolicy="no-referrer"
                   onError={() => setHeroImageError(true)}

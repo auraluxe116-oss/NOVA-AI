@@ -21,6 +21,7 @@ const {
   setDatabaseAdapterForTests,
 } = await import('./db.js');
 const { hashIp, hashPassword } = await import('./auth.js');
+const { normalizeVercelRequestUrl } = await import('../api/index.js');
 
 let server: http.Server;
 let baseUrl = '';
@@ -475,7 +476,7 @@ test('sécurité API : en-têtes HTTP, CSRF Origin, mots de passe blancs refusé
 
   const providersRes = await fetch(`${baseUrl}/api/ai/providers`);
   assert.equal(providersRes.status, 200);
-  assert.match(providersRes.headers.get('cache-control') ?? '', /max-age=300/);
+  assert.match(providersRes.headers.get('cache-control') ?? '', /private,\s*max-age=300/);
   const providersJson = (await providersRes.json()) as {
     providers: Array<{ id: string }>;
   };
@@ -484,7 +485,7 @@ test('sécurité API : en-têtes HTTP, CSRF Origin, mots de passe blancs refusé
     ['gemini']
   );
 
-  // 3. Protection CSRF Origin & CORS OPTIONS preflight
+  // 3. Protection CSRF Origin, Sec-Fetch-Site & CORS OPTIONS preflight
   const hostOrigin = new URL(baseUrl).origin;
   const preflightOk = await fetch(`${baseUrl}/api/chat`, {
     method: 'OPTIONS',
@@ -512,6 +513,47 @@ test('sécurité API : en-têtes HTTP, CSRF Origin, mots de passe blancs refusé
   });
   assert.equal(csrfBlocked.status, 403);
   assert.equal(((await csrfBlocked.json()) as { code: string }).code, 'ORIGIN_MISMATCH');
+
+  const secFetchBlocked = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Sec-Fetch-Site': 'cross-site',
+    },
+    body: JSON.stringify({
+      email: 'launch-user@nova-test.local',
+      password: 'NewPassword456!',
+    }),
+  });
+  assert.equal(secFetchBlocked.status, 403);
+  assert.equal(((await secFetchBlocked.json()) as { code: string }).code, 'ORIGIN_MISMATCH');
+
+  // 3b. Cookie HTTPS (X-Forwarded-Proto: https) : SameSite=None; Secure; Partitioned; HttpOnly
+  const httpsReg = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Forwarded-Proto': 'https',
+    },
+    body: JSON.stringify({
+      email: 'https-cookie@nova-test.local',
+      password: 'PasswordHttps123!',
+      displayName: 'Https Cookie User',
+    }),
+  });
+  assert.equal(httpsReg.status, 201);
+  const httpsSetCookie = httpsReg.headers.get('set-cookie') ?? '';
+  assert.match(httpsSetCookie, /HttpOnly/i);
+  assert.match(httpsSetCookie, /SameSite=None/i);
+  assert.match(httpsSetCookie, /Secure/i);
+  assert.match(httpsSetCookie, /Partitioned/i);
+
+  // 3c. Normalisation Vercel /sites/:slug
+  assert.equal(
+    normalizeVercelRequestUrl('/api/index?__vercel_site=atelier-test-123'),
+    '/sites/atelier-test-123'
+  );
+  assert.equal(normalizeVercelRequestUrl('/sites/mon-site'), '/sites/mon-site');
 
   // 4. Site publié isolé dans une origine opaque via CSP sandbox (sans allow-same-origin)
   const reg = await fetch(`${baseUrl}/api/auth/register`, {

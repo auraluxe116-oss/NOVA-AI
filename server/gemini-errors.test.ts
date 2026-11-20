@@ -54,6 +54,7 @@ let baseUrl = '';
 let nextChatError: Error | null = null;
 let nextChatSuccess: { text: string; modelUsed?: string } | null = null;
 let nextCompanyError: Error | null = null;
+let lastCompanyRequestedModel: string | null = null;
 
 before(async () => {
   setDatabaseAdapterForTests(createMemoryPgAdapter());
@@ -78,7 +79,8 @@ before(async () => {
       }
       throw new Error('Unexpected non-error invocation in gemini-errors.test');
     },
-    generateCompanySuite: async () => {
+    generateCompanySuite: async (params) => {
+      lastCompanyRequestedModel = params.model ?? null;
       if (nextCompanyError) {
         throw nextCompanyError;
       }
@@ -109,6 +111,7 @@ beforeEach(() => {
   nextChatError = null;
   nextChatSuccess = null;
   nextCompanyError = null;
+  lastCompanyRequestedModel = null;
 });
 
 test('extractHttpStatus et extractRetryAfterMs analysent les codes 429, 503, timeout et en-têtes Retry-After', () => {
@@ -832,4 +835,57 @@ test('erreurs 429, 500, 503 et timeout préservent intact l’historique de conv
   assert.equal(detailAfterRetry.messages[2].content, 'Question 2 à conserver');
   assert.equal(detailAfterRetry.messages[3].content, 'Réponse via modèle alternatif gratuit.');
   assert.equal(detailAfterRetry.messages[3].modelUsed, GEMINI_MODELS.fallback);
+});
+
+test('/api/business/company-suite transmet le modèle sélectionné et retourne failedModel + alternativeModels vérifiés sur HTTP 429', async () => {
+  nextCompanyError = makeHttpError(429, 'You exceeded your current quota, limit: 0');
+  const first429 = await fetch(`${baseUrl}/api/business/company-suite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Atelier Solaire',
+      sector: 'Conseil B2B',
+      budgetEur: 500,
+      goal: 'Signer 3 clients',
+      model: GEMINI_MODELS.primary,
+    }),
+  });
+  assert.equal(first429.status, 429);
+  assert.equal(lastCompanyRequestedModel, GEMINI_MODELS.primary);
+  const firstBody = (await first429.json()) as {
+    code: string;
+    failedModel: string;
+    noAlternativeAvailable: boolean;
+    alternativeModels: Array<{ id: string }>;
+  };
+  assert.equal(firstBody.code, 'AI_QUOTA_EXHAUSTED');
+  assert.equal(firstBody.failedModel, GEMINI_MODELS.primary);
+  assert.equal(firstBody.noAlternativeAvailable, false);
+  assert.deepEqual(
+    firstBody.alternativeModels.map((m) => m.id),
+    [GEMINI_MODELS.fallback]
+  );
+
+  // Bascule vers Flash Lite -> transmet bien GEMINI_MODELS.fallback et signale saturation si celui-ci renvoie 429 aussi
+  const second429 = await fetch(`${baseUrl}/api/business/company-suite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Atelier Solaire',
+      sector: 'Conseil B2B',
+      budgetEur: 500,
+      goal: 'Signer 3 clients',
+      model: GEMINI_MODELS.fallback,
+    }),
+  });
+  assert.equal(second429.status, 429);
+  assert.equal(lastCompanyRequestedModel, GEMINI_MODELS.fallback);
+  const secondBody = (await second429.json()) as {
+    failedModel: string;
+    noAlternativeAvailable: boolean;
+    alternativeModels: Array<{ id: string }>;
+  };
+  assert.equal(secondBody.failedModel, GEMINI_MODELS.fallback);
+  assert.equal(secondBody.noAlternativeAvailable, true);
+  assert.deepEqual(secondBody.alternativeModels, []);
 });

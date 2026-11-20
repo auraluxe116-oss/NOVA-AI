@@ -1,10 +1,12 @@
 import {
+  AlertCircle,
   Briefcase,
   Building2,
   Calculator,
   Check,
   Code2,
   Copy,
+  Cpu,
   Download,
   ExternalLink,
   FileSpreadsheet,
@@ -30,6 +32,8 @@ import { BrandLogoGenerator } from '../components/BrandLogoGenerator';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import { VideoStudioCanvas } from '../components/VideoStudioCanvas';
 import type {
+  AIProviderInfo,
+  AlternativeFreeModel,
   BusinessProject,
   CompanyCreationResult,
   ExperienceLevel,
@@ -48,6 +52,7 @@ import {
   deleteCompanyCreationApi,
   deleteDocumentApi,
   deletePublishedSiteApi,
+  fetchAIProviders,
   fetchBusinessProjects,
   fetchCompanyCreations,
   fetchDocuments,
@@ -61,6 +66,7 @@ import {
   regenerateWebsiteApi,
   saveDocumentApi,
   streamBusinessGeneration,
+  updateProfile,
 } from '../utils/api';
 import {
   downloadDataUrl,
@@ -81,11 +87,42 @@ interface BusinessModePageProps {
   onClearInitialProject?: () => void;
   onLaunchPrompt?: (prompt: string) => void;
   onQuotaUpdated: (q: QuotaSnapshot) => void;
+  onUserUpdated?: (user: PublicUser, quota: QuotaSnapshot) => void;
   onNavigate: (view: PageView) => void;
 }
 
 type WorkspaceTab = 'company' | 'modules' | 'content' | 'video' | 'documents';
 type CompanySubTab = 'logo' | 'website' | 'brand' | 'offer' | 'plan';
+
+interface AiErrorState {
+  message: string;
+  code?: string | null;
+  retryAfterSec?: number | null;
+  failedModel?: string | null;
+  alternativeModels: AlternativeFreeModel[];
+  noAlternativeAvailable: boolean;
+}
+
+function toAiErrorState(err: unknown, fallbackMessage: string, currentModel: string): AiErrorState {
+  if (err instanceof ApiError) {
+    return {
+      message: err.message || fallbackMessage,
+      code: err.code,
+      retryAfterSec: err.retryAfterSec,
+      failedModel: err.failedModel || currentModel,
+      alternativeModels: err.alternativeModels ?? [],
+      noAlternativeAvailable: Boolean(err.noAlternativeAvailable),
+    };
+  }
+  return {
+    message: err instanceof Error ? err.message : fallbackMessage,
+    code: 'AI_ERROR',
+    retryAfterSec: null,
+    failedModel: currentModel,
+    alternativeModels: [],
+    noAlternativeAvailable: false,
+  };
+}
 
 interface BusinessModuleItem {
   key: string;
@@ -146,9 +183,22 @@ export function BusinessModePage({
   onClearInitialProject,
   onLaunchPrompt,
   onQuotaUpdated,
+  onUserUpdated,
   onNavigate,
 }: BusinessModePageProps) {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('company');
+  const modelStorageKey = `nova_selected_model_${user?.id ?? 'guest'}`;
+  const [providers, setProviders] = useState<AIProviderInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      const saved =
+        typeof window !== 'undefined' ? window.sessionStorage.getItem(modelStorageKey) : null;
+      return saved || user?.preferences?.preferredModel || 'gemini-4-hydrogen';
+    } catch {
+      return user?.preferences?.preferredModel || 'gemini-4-hydrogen';
+    }
+  });
+  const userManuallyPickedModelRef = useRef(false);
 
   // --- TAB 1: REAL COMPANY CREATION SUITE ---
   const [compTitle, setCompTitle] = useState('');
@@ -162,7 +212,7 @@ export function BusinessModePage({
   const [compGoal, setCompGoal] = useState('');
   const [compContext, setCompContext] = useState('');
   const [compLoading, setCompLoading] = useState(false);
-  const [compError, setCompError] = useState<string | null>(null);
+  const [compError, setCompError] = useState<AiErrorState | null>(null);
   const [suite, setSuite] = useState<CompanyCreationResult | null>(null);
   const [activeCreationId, setActiveCreationId] = useState<string | null>(null);
   const [companySubTab, setCompanySubTab] = useState<CompanySubTab>('logo');
@@ -172,6 +222,7 @@ export function BusinessModePage({
   const [logoBackdrop, setLogoBackdrop] = useState<LogoBackdrop>('dark');
   const [logoPngUrl, setLogoPngUrl] = useState<string | null>(null);
   const [logoPngError, setLogoPngError] = useState<string | null>(null);
+  const [logoRegenError, setLogoRegenError] = useState<AiErrorState | null>(null);
   const [logoStyleHint, setLogoStyleHint] = useState('');
   const [logoRegenLoading, setLogoRegenLoading] = useState(false);
 
@@ -180,6 +231,7 @@ export function BusinessModePage({
   const [siteViewMode, setSiteViewMode] = useState<'preview' | 'code'>('preview');
   const [siteCustomInstructions, setSiteCustomInstructions] = useState('');
   const [siteRegenLoading, setSiteRegenLoading] = useState(false);
+  const [siteRegenError, setSiteRegenError] = useState<AiErrorState | null>(null);
   const [sitePublishLoading, setSitePublishLoading] = useState(false);
   const [publishedInfo, setPublishedInfo] = useState<{
     slug: string;
@@ -207,7 +259,7 @@ export function BusinessModePage({
   const [sources, setSources] = useState<SourceLink[]>([]);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<AiErrorState | null>(null);
   const [copiedOutput, setCopiedOutput] = useState(false);
   const [savedProjects, setSavedProjects] = useState<BusinessProject[]>([]);
 
@@ -237,7 +289,7 @@ export function BusinessModePage({
   const [contentCta, setContentCta] = useState('');
   const [contentOutput, setContentOutput] = useState('');
   const [contentLoading, setContentLoading] = useState(false);
-  const [contentError, setContentError] = useState<string | null>(null);
+  const [contentError, setContentError] = useState<AiErrorState | null>(null);
   const [contentCopied, setContentCopied] = useState(false);
 
   // --- TAB 4: VIDEO STUDIO ---
@@ -247,7 +299,7 @@ export function BusinessModePage({
   const [videoDuration, setVideoDuration] = useState('30');
   const [videoSourceScript, setVideoSourceScript] = useState('');
   const [videoLoading, setVideoLoading] = useState(false);
-  const [videoError, setVideoError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<AiErrorState | null>(null);
   const [storyboard, setStoryboard] = useState<VideoStoryboard | null>(null);
 
   // --- TAB 5: DOCUMENTS & PDF ---
@@ -258,13 +310,77 @@ export function BusinessModePage({
   const [genDocContext, setGenDocContext] = useState('');
   const [genDocMarkdown, setGenDocMarkdown] = useState('');
   const [genDocLoading, setGenDocLoading] = useState(false);
-  const [genDocError, setGenDocError] = useState<string | null>(null);
+  const [genDocError, setGenDocError] = useState<AiErrorState | null>(null);
   const [genDocEditMode, setGenDocEditMode] = useState(false);
   const [savedDocs, setSavedDocs] = useState<UserDocument[]>([]);
   const [docSaveFeedback, setDocSaveFeedback] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const moduleInFlightRef = useRef(false);
+
+  const persistModelChoice = (mod: string) => {
+    userManuallyPickedModelRef.current = true;
+    setSelectedModel(mod);
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(modelStorageKey, mod);
+      }
+    } catch {
+      // ignore storage errors
+    }
+    if (user) {
+      void updateProfile({
+        preferences: {
+          preferredProvider: 'gemini',
+          preferredModel: mod,
+        },
+      })
+        .then((res) => onUserUpdated?.(res.user, res.quota))
+        .catch(() => {});
+    }
+  };
+
+  const refreshProviders = async (applyDefaults = false) => {
+    try {
+      const res = await fetchAIProviders();
+      setProviders(res.providers);
+      if (applyDefaults && !userManuallyPickedModelRef.current) {
+        const match = res.providers.find((p) => p.configured) || res.providers[0];
+        if (match) {
+          let savedSessionModel: string | null = null;
+          try {
+            savedSessionModel =
+              typeof window !== 'undefined'
+                ? window.sessionStorage.getItem(modelStorageKey)
+                : null;
+          } catch {
+            savedSessionModel = null;
+          }
+          const prefModel = user?.preferences?.preferredModel;
+          const hasSession =
+            savedSessionModel && match.models.some((m) => m.id === savedSessionModel);
+          const hasPref = prefModel && match.models.some((m) => m.id === prefModel);
+          setSelectedModel(
+            hasSession
+              ? (savedSessionModel as string)
+              : hasPref
+                ? (prefModel as string)
+                : match.defaultModel
+          );
+        }
+      }
+    } catch {
+      // ignore provider list fetch failure
+    }
+  };
+
+  useEffect(() => {
+    userManuallyPickedModelRef.current = false;
+  }, [user?.id]);
+
+  useEffect(() => {
+    void refreshProviders(true);
+  }, [user?.id, user?.preferences?.preferredModel]);
 
   useEffect(() => {
     if (user?.preferences?.defaultExperience) {
@@ -392,9 +508,10 @@ export function BusinessModePage({
   const totalTtc = totalHt + totalVat;
 
   // --- HANDLERS: COMPANY SUITE ---
-  const handleGenerateCompanySuite = async (e: FormEvent) => {
-    e.preventDefault();
+  const runCompanySuite = async (overrideModel?: string) => {
     if (compLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setCompError(null);
     setSiteFeedback(null);
     setPublishedInfo(null);
@@ -409,6 +526,7 @@ export function BusinessModePage({
         weeklyHours: Math.max(1, Number(compHours) || 15),
         experienceLevel: compExp,
         contextDetails: compContext.trim(),
+        model: modelToUse,
       });
       setSuite(res.suite);
       setActiveCreationId(res.creationId);
@@ -420,19 +538,26 @@ export function BusinessModePage({
       }
     } catch (err) {
       setCompError(
-        err instanceof ApiError || err instanceof Error
-          ? err.message
-          : "Impossible de générer la création d'entreprise."
+        toAiErrorState(err, "Impossible de générer la création d'entreprise.", modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setCompLoading(false);
     }
   };
 
-  const handleRegenerateLogo = async () => {
+  const handleGenerateCompanySuite = (e: FormEvent) => {
+    e.preventDefault();
+    void runCompanySuite();
+  };
+
+  const handleRegenerateLogo = async (overrideModel?: string) => {
     if (!suite || logoRegenLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setLogoRegenLoading(true);
     setLogoPngError(null);
+    setLogoRegenError(null);
     try {
       const res = await regenerateLogoApi({
         brandName: suite.brandIdentity.brandName,
@@ -441,21 +566,26 @@ export function BusinessModePage({
         secondaryColor: suite.brandIdentity.colors.accent,
         styleHint: logoStyleHint.trim(),
         creationId: activeCreationId,
+        model: modelToUse,
       });
       setSuite((prev) => (prev ? { ...prev, logoSvg: res.logoSvg } : prev));
     } catch (err) {
-      setLogoPngError(
-        err instanceof Error ? err.message : 'Erreur lors de la régénération du logo.'
+      setLogoRegenError(
+        toAiErrorState(err, 'Erreur lors de la régénération du logo.', modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setLogoRegenLoading(false);
     }
   };
 
-  const handleRegenerateWebsite = async () => {
+  const handleRegenerateWebsite = async (overrideModel?: string) => {
     if (!suite || siteRegenLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setSiteRegenLoading(true);
     setSiteFeedback(null);
+    setSiteRegenError(null);
     try {
       const packagesText = suite.commercialOffer.packages
         .map((pkg) => `${pkg.name} (${pkg.priceLabel}): ${pkg.deliverables.join(', ')}`)
@@ -471,12 +601,14 @@ export function BusinessModePage({
         logoSvg: suite.logoSvg,
         customInstructions: siteCustomInstructions.trim(),
         creationId: activeCreationId,
+        model: modelToUse,
       });
       setSuite((prev) => (prev ? { ...prev, websiteHtml: res.websiteHtml } : prev));
     } catch (err) {
-      setSiteFeedback(
-        err instanceof Error ? err.message : 'Erreur lors de la régénération du site.'
+      setSiteRegenError(
+        toAiErrorState(err, 'Erreur lors de la régénération du site.', modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setSiteRegenLoading(false);
     }
@@ -533,13 +665,19 @@ export function BusinessModePage({
       }
       setCompanySubTab('logo');
     } catch {
-      setCompError('Impossible de relire cette création enregistrée.');
+      setCompError({
+        message: 'Impossible de relire cette création enregistrée.',
+        alternativeModels: [],
+        noAlternativeAvailable: false,
+      });
     }
   };
 
   // --- HANDLERS: 18 MODULES STREAM ---
-  const runModuleGeneration = async () => {
+  const runModuleGeneration = async (overrideModel?: string) => {
     if (isGenerating || moduleInFlightRef.current) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     moduleInFlightRef.current = true;
     setErrorMessage(null);
     setStreamingContent('');
@@ -562,6 +700,7 @@ export function BusinessModePage({
         experienceLevel,
         contextDetails: contextDetails.trim(),
         useWebSearch,
+        model: modelToUse,
         signal: controller.signal,
         onStatus: (label) => setStatusLabel(label),
         onDelta: (delta) => {
@@ -579,10 +718,9 @@ export function BusinessModePage({
     } catch (err) {
       if (!(err instanceof DOMException && err.name === 'AbortError')) {
         setErrorMessage(
-          err instanceof ApiError || err instanceof Error
-            ? err.message
-            : 'Impossible de générer le projet business.'
+          toAiErrorState(err, 'Impossible de générer le projet business.', modelToUse)
         );
+        void refreshProviders(false);
       }
     } finally {
       moduleInFlightRef.current = false;
@@ -593,9 +731,10 @@ export function BusinessModePage({
   };
 
   // --- HANDLERS: CONTENT STUDIO ---
-  const handleGenerateContent = async (e: FormEvent) => {
-    e.preventDefault();
+  const runContentGeneration = async (overrideModel?: string) => {
     if (contentLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setContentError(null);
     setContentLoading(true);
     try {
@@ -605,23 +744,29 @@ export function BusinessModePage({
         targetAudience: contentAudience.trim(),
         tone: contentTone.trim(),
         callToAction: contentCta.trim(),
+        model: modelToUse,
       });
       setContentOutput(res.content);
     } catch (err) {
       setContentError(
-        err instanceof ApiError || err instanceof Error
-          ? err.message
-          : 'Erreur lors de la génération du contenu.'
+        toAiErrorState(err, 'Erreur lors de la génération du contenu.', modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setContentLoading(false);
     }
   };
 
-  // --- HANDLERS: VIDEO STUDIO ---
-  const handleGenerateStoryboard = async (e: FormEvent) => {
+  const handleGenerateContent = (e: FormEvent) => {
     e.preventDefault();
+    void runContentGeneration();
+  };
+
+  // --- HANDLERS: VIDEO STUDIO ---
+  const runVideoStoryboard = async (overrideModel?: string) => {
     if (videoLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setVideoError(null);
     setVideoLoading(true);
     try {
@@ -631,23 +776,29 @@ export function BusinessModePage({
         tone: videoTone.trim(),
         durationTargetSec: Number(videoDuration) || 30,
         sourceScript: videoSourceScript.trim(),
+        model: modelToUse,
       });
       setStoryboard(res.storyboard);
     } catch (err) {
       setVideoError(
-        err instanceof ApiError || err instanceof Error
-          ? err.message
-          : 'Impossible de générer le storyboard vidéo.'
+        toAiErrorState(err, 'Impossible de générer le storyboard vidéo.', modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setVideoLoading(false);
     }
   };
 
-  // --- HANDLERS: DOCUMENTS & PDF ---
-  const handleGenerateDocument = async (e: FormEvent) => {
+  const handleGenerateStoryboard = (e: FormEvent) => {
     e.preventDefault();
+    void runVideoStoryboard();
+  };
+
+  // --- HANDLERS: DOCUMENTS & PDF ---
+  const runDocumentGeneration = async (overrideModel?: string) => {
     if (genDocLoading) return;
+    const modelToUse = overrideModel || selectedModel;
+    if (overrideModel) persistModelChoice(overrideModel);
     setGenDocError(null);
     setDocSaveFeedback(null);
     setGenDocLoading(true);
@@ -658,6 +809,7 @@ export function BusinessModePage({
         companyName: genDocCompany.trim(),
         clientName: genDocClient.trim(),
         context: genDocContext.trim(),
+        model: modelToUse,
       });
       setGenDocMarkdown(res.contentMarkdown);
       if (res.document) {
@@ -666,13 +818,17 @@ export function BusinessModePage({
       }
     } catch (err) {
       setGenDocError(
-        err instanceof ApiError || err instanceof Error
-          ? err.message
-          : 'Impossible de générer le document.'
+        toAiErrorState(err, 'Impossible de générer le document.', modelToUse)
       );
+      void refreshProviders(false);
     } finally {
       setGenDocLoading(false);
     }
+  };
+
+  const handleGenerateDocument = (e: FormEvent) => {
+    e.preventDefault();
+    void runDocumentGeneration();
   };
 
   const handleSaveManualDoc = async () => {
@@ -687,8 +843,67 @@ export function BusinessModePage({
       setSavedDocs((prev) => [res.document, ...prev]);
       setDocSaveFeedback('Modifications enregistrées.');
     } catch (err) {
-      setGenDocError(err instanceof Error ? err.message : 'Erreur sauvegarde.');
+      setGenDocError({
+        message: err instanceof Error ? err.message : 'Erreur sauvegarde.',
+        alternativeModels: [],
+        noAlternativeAvailable: false,
+      });
     }
+  };
+
+  const renderAiErrorBox = (
+    errState: AiErrorState | null,
+    busy: boolean,
+    onRetryWithModel: (modelOverride?: string) => void
+  ) => {
+    if (!errState) return null;
+    const isUnavailableNotice =
+      errState.noAlternativeAvailable &&
+      errState.alternativeModels.length === 0 &&
+      (errState.code === 'AI_QUOTA_EXHAUSTED' ||
+        errState.code === 'AI_RATE_LIMIT' ||
+        errState.code === 'AI_BUSY' ||
+        errState.code === 'AI_MODEL_UNAVAILABLE' ||
+        errState.code === 'AI_TIMEOUT');
+
+    return (
+      <div className="space-y-2.5 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-200">
+        <div className="flex items-start gap-2">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+          <div className="space-y-1">
+            <p>{errState.message}</p>
+            {isUnavailableNotice && (
+              <p className="text-[11px] text-red-300/90">
+                Service temporairement indisponible : aucun modèle gratuit alternatif disponible
+                pour le moment. Aucun paiement ni facturation n&apos;est déclenché.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {errState.alternativeModels.map((alt) => (
+            <button
+              key={alt.id}
+              type="button"
+              disabled={busy}
+              onClick={() => onRetryWithModel(alt.id)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-3 py-1.5 font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
+            >
+              Basculer vers {alt.label} et réessayer
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onRetryWithModel()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-red-400/40 bg-red-500/20 px-3 py-1.5 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const buildInvoiceText = () => {
@@ -733,16 +948,49 @@ export function BusinessModePage({
           </p>
         </div>
 
-        {quota && (
-          <div className="rounded-lg border border-[#232332] bg-[#111117] px-4 py-2.5 text-xs">
-            <span className="text-[#9E9EB5]">Générations du jour : </span>
-            <span className="font-mono font-semibold tabular-nums text-white">
-              {quota.businessUsedToday}
-              {quota.dailyBusinessLimit !== null ? ` / ${quota.dailyBusinessLimit}` : ''}
-            </span>
-            <span className="ml-1.5 text-emerald-400">· Gratuit 0 € (quotas Gemini)</span>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {providers.length > 0 && (
+            <div className="flex items-center gap-1.5 rounded-lg border border-[#232332] bg-[#111117] px-3 py-2 text-xs">
+              <Cpu className="h-3.5 w-3.5 shrink-0 text-[#3B82F6]" />
+              <span className="text-[#9E9EB5]">Modèle :</span>
+              <select
+                aria-label="Modèle IA gratuit utilisé dans le Studio Business"
+                value={selectedModel}
+                onChange={(e) => persistModelChoice(e.target.value)}
+                className="max-w-[200px] truncate bg-transparent font-mono text-xs text-white focus:outline-none"
+              >
+                {providers.flatMap((p) =>
+                  p.models.map((m) => (
+                    <option
+                      key={`${p.id}:${m.id}`}
+                      value={m.id}
+                      disabled={!p.configured}
+                      className="bg-[#111117] text-white"
+                    >
+                      {m.label}
+                      {!p.configured
+                        ? ' (non configuré)'
+                        : m.available === false
+                          ? ' (indisponible)'
+                          : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )}
+
+          {quota && (
+            <div className="rounded-lg border border-[#232332] bg-[#111117] px-4 py-2.5 text-xs">
+              <span className="text-[#9E9EB5]">Générations du jour : </span>
+              <span className="font-mono font-semibold tabular-nums text-white">
+                {quota.businessUsedToday}
+                {quota.dailyBusinessLimit !== null ? ` / ${quota.dailyBusinessLimit}` : ''}
+              </span>
+              <span className="ml-1.5 text-emerald-400">· Gratuit 0 € (quotas Gemini)</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Primary Workspace Tabs */}
@@ -922,11 +1170,7 @@ export function BusinessModePage({
                 />
               </div>
 
-              {compError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                  {compError}
-                </div>
-              )}
+              {renderAiErrorBox(compError, compLoading, (m) => void runCompanySuite(m))}
 
               <button
                 type="submit"
@@ -1155,6 +1399,10 @@ export function BusinessModePage({
                         </div>
                       )}
 
+                      {renderAiErrorBox(logoRegenError, logoRegenLoading, (m) =>
+                        void handleRegenerateLogo(m)
+                      )}
+
                       <div className="flex flex-wrap gap-2.5">
                         <button
                           type="button"
@@ -1333,6 +1581,10 @@ export function BusinessModePage({
                       <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                         {siteFeedback}
                       </div>
+                    )}
+
+                    {renderAiErrorBox(siteRegenError, siteRegenLoading, (m) =>
+                      void handleRegenerateWebsite(m)
                     )}
 
                     {siteViewMode === 'preview' ? (
@@ -1830,20 +2082,7 @@ export function BusinessModePage({
                   Inclure une recherche web en direct
                 </label>
 
-                {errorMessage && (
-                  <div className="space-y-2 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-200">
-                    <p>{errorMessage}</p>
-                    <button
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => void runModuleGeneration()}
-                      className="inline-flex items-center gap-1.5 rounded border border-red-400/40 bg-red-500/20 px-2.5 py-1 font-medium text-red-100 hover:bg-red-500/30 disabled:opacity-50"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                      Réessayer
-                    </button>
-                  </div>
-                )}
+                {renderAiErrorBox(errorMessage, isGenerating, (m) => void runModuleGeneration(m))}
 
                 <div className="flex gap-2">
                   <button
@@ -2309,11 +2548,7 @@ export function BusinessModePage({
               />
             </div>
 
-            {contentError && (
-              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                {contentError}
-              </div>
-            )}
+            {renderAiErrorBox(contentError, contentLoading, (m) => void runContentGeneration(m))}
 
             <button
               type="submit"
@@ -2464,11 +2699,7 @@ export function BusinessModePage({
               />
             </div>
 
-            {videoError && (
-              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                {videoError}
-              </div>
-            )}
+            {renderAiErrorBox(videoError, videoLoading, (m) => void runVideoStoryboard(m))}
           </form>
 
           {storyboard && (
@@ -2567,11 +2798,7 @@ export function BusinessModePage({
                 />
               </div>
 
-              {genDocError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                  {genDocError}
-                </div>
-              )}
+              {renderAiErrorBox(genDocError, genDocLoading, (m) => void runDocumentGeneration(m))}
 
               <button
                 type="submit"
