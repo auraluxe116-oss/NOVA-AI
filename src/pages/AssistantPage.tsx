@@ -57,24 +57,24 @@ interface AttachmentPayload {
 
 const STARTER_TOPICS = [
   {
-    category: 'Agence IA & SaaS',
+    category: 'Business & Plan 0 €',
     prompt:
-      "Je veux lancer une agence d'automatisation IA B2B avec 500 € de budget : donne-moi le plan complet en 7 étapes pour signer mes 3 premiers clients.",
+      'Trouve 3 idées de business lançables avec 0 € de budget et construis le plan d’action complet pour trouver mes premiers clients.',
   },
   {
-    category: 'E-commerce & Marges',
+    category: 'Site Web & Code',
     prompt:
-      'Calcule un modèle réaliste de boutique e-commerce (coûts produit, acquisition, retours, TVA, marge nette) avant de lancer la publicité.',
+      'Aide-moi à créer la structure HTML/CSS moderne d’un site vitrine rapide pour mon projet, avec bonnes pratiques d’accessibilité.',
   },
   {
-    category: 'Vente & Prospection',
+    category: 'Apprentissage simple',
     prompt:
-      'Rédige une séquence de prospection B2B honnête et une proposition commerciale structurée pour vendre un service à des PME.',
+      'Explique-moi simplement comment fonctionne une API REST et comment sécuriser mes clés sur un serveur.',
   },
   {
-    category: 'Statut & Finance FR',
+    category: 'Contenu & Marketing',
     prompt:
-      'Compare micro-entreprise, EURL et SASU en France (charges sociales, TVA franchise 293 B, obligations légales) pour démarrer une activité de conseil.',
+      'Rédige une stratégie de contenu pour mes réseaux sociaux (LinkedIn, TikTok, Instagram) et 3 accroches efficaces.',
   },
 ];
 
@@ -537,7 +537,26 @@ export function AssistantPage({
   };
 
   const handleCopyMessage = (id: string, text: string) => {
-    void navigator.clipboard.writeText(text);
+    const copyFallback = () => {
+      try {
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+      } catch {
+        // ignore
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).catch(copyFallback);
+    } else {
+      copyFallback();
+    }
     setCopiedMsgId(id);
     setTimeout(() => setCopiedMsgId(null), 1800);
   };
@@ -735,7 +754,7 @@ export function AssistantPage({
               type="button"
               onClick={() => setMobileHistoryOpen(true)}
               aria-label="Ouvrir la liste des conversations"
-              className="md:hidden inline-flex items-center gap-1 rounded-md border border-[#232332] bg-[#111117] px-2.5 py-1.5 text-xs font-medium text-[#D6D6E4] hover:text-white"
+              className="md:hidden inline-flex items-center gap-1.5 rounded-md border border-[#232332] bg-[#111117] px-3 py-2 text-xs font-medium text-[#D6D6E4] hover:text-white whitespace-nowrap shrink-0"
             >
               <History className="h-3.5 w-3.5 text-[#A78BFA]" />
               Historique
@@ -743,7 +762,7 @@ export function AssistantPage({
             <button
               type="button"
               onClick={handleNewChat}
-              className="md:hidden inline-flex items-center gap-1 rounded-md border border-[#232332] bg-[#111117] px-2.5 py-1.5 text-xs font-medium text-white"
+              className="md:hidden inline-flex items-center gap-1.5 rounded-md border border-[#232332] bg-[#111117] px-3 py-2 text-xs font-medium text-white whitespace-nowrap shrink-0"
             >
               <MessageSquarePlus className="h-3.5 w-3.5 text-[#A78BFA]" />
               Nouveau
@@ -918,22 +937,39 @@ export function AssistantPage({
                                 <p>{msg.errorMessage || msg.content}</p>
                                 {lastFailedRequest && (
                                   <div className="flex flex-wrap gap-2">
-                                    <button
-                                      type="button"
-                                      disabled={isGenerating || retryCountdownSec > 0}
-                                      onClick={() =>
-                                        void sendMessage(lastFailedRequest.prompt, {
-                                          isRetry: true,
-                                          overrideAttachment: lastFailedRequest.attachment,
-                                        })
-                                      }
-                                      className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
-                                    >
-                                      <RotateCcw className="h-3.5 w-3.5" />
-                                      {retryCountdownSec > 0
-                                        ? `Réessayer (${retryCountdownSec}s)`
-                                        : 'Réessayer'}
-                                    </button>
+                                    {(lastFailedRequest.errorCode === 'AI_QUOTA_EXHAUSTED' ||
+                                      lastFailedRequest.errorCode === 'AI_RATE_LIMIT') &&
+                                      selectedModel !== 'gemini-3.1-flash-lite' && (
+                                        <button
+                                          type="button"
+                                          disabled={isGenerating}
+                                          onClick={() => {
+                                            setSelectedProvider('gemini');
+                                            setSelectedModel('gemini-3.1-flash-lite');
+                                          }}
+                                          className="inline-flex items-center gap-1.5 rounded-md border border-[#3B82F6]/50 bg-[#3B82F6]/15 px-3 py-1.5 text-xs font-medium text-[#DBEAFE] hover:bg-[#3B82F6]/25 disabled:opacity-50"
+                                        >
+                                          Passer à Flash Lite (gratuit)
+                                        </button>
+                                      )}
+                                    {lastFailedRequest.errorCode !== 'FREE_QUOTA_REACHED' && (
+                                      <button
+                                        type="button"
+                                        disabled={isGenerating || retryCountdownSec > 0}
+                                        onClick={() =>
+                                          void sendMessage(lastFailedRequest.prompt, {
+                                            isRetry: true,
+                                            overrideAttachment: lastFailedRequest.attachment,
+                                          })
+                                        }
+                                        className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-500/25 disabled:opacity-50"
+                                      >
+                                        <RotateCcw className="h-3.5 w-3.5" />
+                                        {retryCountdownSec > 0
+                                          ? `Réessayer (${retryCountdownSec}s)`
+                                          : 'Réessayer'}
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       disabled={isGenerating}

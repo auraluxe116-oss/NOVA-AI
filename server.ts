@@ -13,7 +13,7 @@ async function startServer() {
   try {
     await ensureDatabaseReady();
   } catch (err) {
-    console.warn('[NOVA AI PRO] PostgreSQL non initialisé au démarrage :', sanitizeDbErrorMessage(err));
+    console.warn('[NOVA AI] PostgreSQL non initialisé au démarrage :', sanitizeDbErrorMessage(err));
   }
 
   const app = createApp();

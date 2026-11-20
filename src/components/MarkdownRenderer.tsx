@@ -21,7 +21,26 @@ function CodeBlock({
   const lang = className?.replace('language-', '') || 'code';
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(raw);
+    const copyFallback = () => {
+      try {
+        const el = document.createElement('textarea');
+        el.value = raw;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+      } catch {
+        // ignore
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(raw).catch(copyFallback);
+    } else {
+      copyFallback();
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };
@@ -99,16 +118,28 @@ export function MarkdownRenderer({ content, sources }: MarkdownRendererProps) {
           td: ({ children }) => (
             <td className="border-b border-[#1D1D29] px-3 py-2 text-[#D2D2E0]">{children}</td>
           ),
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[#A78BFA] underline decoration-[#7C3AED]/60 underline-offset-2 hover:text-[#C4B5FD]"
-            >
-              {children}
-            </a>
-          ),
+          a: ({ href, children }) => {
+            const trimmed = (href ?? '').trim();
+            const isSafe =
+              trimmed.startsWith('https://') ||
+              trimmed.startsWith('http://') ||
+              trimmed.startsWith('mailto:') ||
+              trimmed.startsWith('/') ||
+              trimmed.startsWith('#');
+            if (!isSafe) {
+              return <span className="text-[#D2D2E0]">{children}</span>;
+            }
+            return (
+              <a
+                href={trimmed}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#A78BFA] underline decoration-[#7C3AED]/60 underline-offset-2 hover:text-[#C4B5FD]"
+              >
+                {children}
+              </a>
+            );
+          },
           code: ({ className, children }) => {
             const isBlock = Boolean(className) || String(children).includes('\n');
             if (isBlock) {
